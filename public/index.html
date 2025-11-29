@@ -1,25 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>Fence Fighters (Prototype)</title>
-    <style>
-      body {
-        margin: 0;
-        background: #111;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        height: 100vh;
-      }
-      canvas {
-        border: 2px solid #444;
-        image-rendering: pixelated;
-      }
-    </style>
-  </head>
-  <body>
+<head>
+  <meta charset="UTF-8" />
+  <title>Fence Fighters Online</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #050510;
+      color: #f5f5f5;
+      font-family: Arial, sans-serif;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #game {
+      border: 2px solid #444;
+      background: #000;
+      image-rendering: pixelated;
+    }
+
+    #info {
+      font-size: 14px;
+      color: #ccc;
+      text-align: center;
+      max-width: 900px;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrapper">
     <canvas id="game"></canvas>
-    <script src="main.js"></script>
-  </body>
+    <div id="info">
+      <div><strong>Fence Fighters Online</strong></div>
+      <div>
+        Open this page in two different browsers/devices.<br />
+        The first becomes <strong>Player 1 (left)</strong>, the second becomes
+        <strong>Player 2 (right)</strong>. Both use <strong>WASD</strong> to move.
+      </div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
 </html>

@@ -1,90 +1,119 @@
-// src/server/ws_lobby.js
-// Minimal WebSocket server just for role assignment & readiness.
+// src/server/http_ws.js
+// Express static server + WebSocket lobby for Fence Fighters
 
+const path = require("path");
+const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 
-// Basic HTTP server just to have something for ws to attach to
-const server = http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end("Fence Fighters WS lobby running.\n");
+const app = express();
+
+// Serve static files from /public
+const publicDir = path.join(__dirname, "..", "..", "public");
+app.use(express.static(publicDir));
+
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 
+const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-let players = {
-  p1: null,
-  p2: null,
-};
+// --- Lobby / roles ---
 
-function broadcastStatus() {
-  const bothReady = !!players.p1 && !!players.p2;
-  const msg = JSON.stringify({
-    type: "status",
-    bothReady,
-    connected: {
-      p1: !!players.p1,
-      p2: !!players.p2,
-    },
-  });
+let nextClientId = 1;
+const clients = new Map(); // ws -> { id, role }
+let roleToClient = { p1: null, p2: null };
 
-  if (players.p1 && players.p1.readyState === WebSocket.OPEN) {
-    players.p1.send(msg);
-  }
-  if (players.p2 && players.p2.readyState === WebSocket.OPEN) {
-    players.p2.send(msg);
+function broadcast(obj) {
+  const msg = JSON.stringify(obj);
+  for (const ws of wss.clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+    }
   }
 }
 
-wss.on("connection", (ws) => {
-  let role = null;
+function sendLobbyState() {
+  const lobby = {
+    type: "lobby",
+    p1: !!roleToClient.p1,
+    p2: !!roleToClient.p2,
+  };
+  broadcast(lobby);
+}
 
-  if (!players.p1) {
+wss.on("connection", (ws) => {
+  const id = nextClientId++;
+  // Assign role: first p1, second p2, rest spectators
+  let role = "spectator";
+  if (!roleToClient.p1) {
     role = "p1";
-    players.p1 = ws;
-  } else if (!players.p2) {
+    roleToClient.p1 = ws;
+  } else if (!roleToClient.p2) {
     role = "p2";
-    players.p2 = ws;
-  } else {
-    // room full
-    ws.send(JSON.stringify({ type: "room_full" }));
-    ws.close();
-    return;
+    roleToClient.p2 = ws;
   }
 
-  console.log(`Client connected as ${role}`);
+  clients.set(ws, { id, role });
+  console.log(`Client ${id} connected as ${role}`);
 
-  // tell this client its role
-  ws.send(JSON.stringify({ type: "role", role }));
+  // Tell the client who it is
+  ws.send(
+    JSON.stringify({
+      type: "hello",
+      id,
+      role,
+    })
+  );
 
-  // notify both about who is connected
-  broadcastStatus();
+  // Update lobby for everyone
+  sendLobbyState();
+
+  ws.on("message", (data) => {
+    let msg;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+
+    // Forward player state to everyone else
+    if (msg.type === "player_state") {
+      // tiny payload, no heavy sim on server
+      for (const [otherWs, info] of clients.entries()) {
+        if (otherWs !== ws && otherWs.readyState === WebSocket.OPEN) {
+          otherWs.send(
+            JSON.stringify({
+              type: "player_state",
+              role: msg.role,
+              x: msg.x,
+              y: msg.y,
+              hp: msg.hp,
+              gold: msg.gold,
+              score: msg.score,
+              monstersKilled: msg.monstersKilled,
+            })
+          );
+        }
+      }
+    }
+  });
 
   ws.on("close", () => {
-    console.log(`${role} disconnected`);
-    if (players[role] === ws) {
-      players[role] = null;
+    console.log(`Client ${id} disconnected`);
+    const info = clients.get(ws);
+    if (info) {
+      if (info.role === "p1") roleToClient.p1 = null;
+      if (info.role === "p2") roleToClient.p2 = null;
     }
-    broadcastStatus();
-  });
-
-  ws.on("error", (err) => {
-    console.error(`WS error (${role}):`, err);
-  });
-
-  // incoming messages from clients (we'll use this later for inputs/game state)
-  ws.on("message", (data) => {
-    try {
-      const msg = JSON.parse(data.toString());
-      // For now, we ignore messages. Later we can use them for input sync.
-    } catch (e) {
-      console.error("Bad message:", e);
-    }
+    clients.delete(ws);
+    sendLobbyState();
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`WS lobby listening on port ${PORT}`);
+  console.log(`Fence Fighters server listening on port ${PORT}`);
 });
