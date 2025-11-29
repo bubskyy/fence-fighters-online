@@ -1,4 +1,4 @@
-// main.js - Full client-side Fence Fighters (no networking)
+// main.js - Client-side Fence Fighters with simple WS lobby (roles + waiting)
 
 //////////////////////////////
 // Config
@@ -78,6 +78,15 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => {
   keysDown.delete(e.code);
 });
+
+//////////////////////////////
+// Networking
+//////////////////////////////
+
+let socket = null;
+let myRole = null; // "p1" | "p2" | null
+let bothReady = false;
+let connectionStatus = "Connecting...";
 
 //////////////////////////////
 // Entity Classes
@@ -567,7 +576,8 @@ class Game {
     this.ctx = ctx;
     this.assets = assets;
 
-    this.state = "weapon_select"; // weapon_select, playing, shop, game_over
+    // new initial state: waiting for both players to connect
+    this.state = "waiting"; // waiting, weapon_select, playing, shop, game_over
     this.round = 1;
     this.waveLeft = WAVE_TIME;
     this.shopLeft = SHOP_TIME;
@@ -600,6 +610,7 @@ class Game {
     this.healthPickups = [];
     this.spawnWarnings = [];
 
+    // both players use WASD on their own machines
     this.leftControls = {
       up: "KeyW",
       down: "KeyS",
@@ -900,6 +911,14 @@ class Game {
   }
 
   update(dt) {
+    if (this.state === "waiting") {
+      // transition from waiting -> weapon_select when WS lobby says both ready
+      if (bothReady && myRole !== null) {
+        this.state = "weapon_select";
+      }
+      return;
+    }
+
     if (this.state === "weapon_select") {
       // nothing time-based here; just drawing
       return;
@@ -913,8 +932,12 @@ class Game {
   }
 
   updatePlaying(dt) {
-    this.pLeft.updateMovement(dt);
-    this.pRight.updateMovement(dt);
+    // Only move the player controlled by this client.
+    if (myRole === "p1") {
+      this.pLeft.updateMovement(dt);
+    } else if (myRole === "p2") {
+      this.pRight.updateMovement(dt);
+    }
 
     const tLeft = this.nearestMonster("left");
     const tRight = this.nearestMonster("right");
@@ -993,9 +1016,10 @@ class Game {
 
     // enemy spit vs players
     for (const sp of this.enemySpits) {
-      const pr = sp.side === "right"
-        ? { x: this.pLeft.x, y: this.pLeft.y, w: PLAYER_SIZE.w, h: PLAYER_SIZE.h }
-        : { x: this.pRight.x, y: this.pRight.y, w: PLAYER_SIZE.w, h: PLAYER_SIZE.h };
+      const pr =
+        sp.side === "right"
+          ? { x: this.pLeft.x, y: this.pLeft.y, w: PLAYER_SIZE.w, h: PLAYER_SIZE.h }
+          : { x: this.pRight.x, y: this.pRight.y, w: PLAYER_SIZE.w, h: PLAYER_SIZE.h };
 
       if (this.rectsIntersect(sp.rect, pr)) {
         if (sp.side === "right") this.pLeft.takeDamage(sp.damage);
@@ -1104,6 +1128,39 @@ class Game {
   //////////////////////////////
   // Drawing
   //////////////////////////////
+
+  drawWaiting() {
+    const ctx = this.ctx;
+    ctx.fillStyle = "rgb(10,10,20)";
+    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+    ctx.fillStyle = "white";
+    ctx.font = "26px Arial";
+    const title = "Fence Fighters Online";
+    const tw = ctx.measureText(title).width;
+    ctx.fillText(title, SCREEN_WIDTH / 2 - tw / 2, 80);
+
+    ctx.font = "18px Arial";
+    const msg1 = "Waiting for players to connect...";
+    const m1w = ctx.measureText(msg1).width;
+    ctx.fillText(msg1, SCREEN_WIDTH / 2 - m1w / 2, 130);
+
+    ctx.font = "16px Arial";
+    const msg2 =
+      myRole === "p1"
+        ? "You are Player 1 (Left side)."
+        : myRole === "p2"
+        ? "You are Player 2 (Right side)."
+        : "No role assigned yet.";
+    const m2w = ctx.measureText(msg2).width;
+    ctx.fillText(msg2, SCREEN_WIDTH / 2 - m2w / 2, 170);
+
+    const msg3 = bothReady
+      ? "Both connected. Starting weapon select..."
+      : connectionStatus;
+    const m3w = ctx.measureText(msg3).width;
+    ctx.fillText(msg3, SCREEN_WIDTH / 2 - m3w / 2, 210);
+  }
 
   drawBackground() {
     const ctx = this.ctx;
@@ -1233,7 +1290,7 @@ class Game {
     drawPanel(100, "Player 1 (WASD)", this.leftChoice, this.assets.player1);
     drawPanel(
       SCREEN_WIDTH - 320,
-      "Player 2 (Arrows)",
+      "Player 2 (WASD, on second PC)", // note: both use WASD on their own machine
       this.rightChoice,
       this.assets.player2
     );
@@ -1282,7 +1339,7 @@ class Game {
     }
 
     const rightLines = [
-      "Player 2 (Arrows):",
+      "Player 2 (WASD on other PC):",
       `[I] Upgrade weapon (${UPGRADE_COST} gold)`,
       `[O] Send +${EXTRA_MONSTERS_AMOUNT} monsters to P1 (${EXTRA_MONSTERS_COST} gold)`,
       `Extra mobs queued on P1: ${this.extraQueueL}`,
@@ -1315,7 +1372,7 @@ class Game {
     if (this.pLeft.alive && !this.pRight.alive) {
       winnerText = "Player 1 (WASD) wins!";
     } else if (!this.pLeft.alive && this.pRight.alive) {
-      winnerText = "Player 2 (Arrows) wins!";
+      winnerText = "Player 2 (WASD) wins!";
     } else if (!this.pLeft.alive && !this.pRight.alive) {
       winnerText = "It's a draw! Both players fell.";
     }
@@ -1327,7 +1384,7 @@ class Game {
 
     const lines = [
       `Player 1 (WASD):  Monsters killed: ${this.pLeft.monstersKilled}  |  Gold: ${this.pLeft.gold}`,
-      `Player 2 (Arrows):  Monsters killed: ${this.pRight.monstersKilled}  |  Gold: ${this.pRight.gold}`,
+      `Player 2 (WASD):  Monsters killed: ${this.pRight.monstersKilled}  |  Gold: ${this.pRight.gold}`,
     ];
     let y = 140;
     for (const line of lines) {
@@ -1348,7 +1405,8 @@ class Game {
   }
 
   draw() {
-    if (this.state === "weapon_select") this.drawWeaponSelect();
+    if (this.state === "waiting") this.drawWaiting();
+    else if (this.state === "weapon_select") this.drawWeaponSelect();
     else if (this.state === "playing") this.drawPlaying();
     else if (this.state === "shop") this.drawShop();
     else if (this.state === "game_over") this.drawGameOver();
@@ -1415,6 +1473,52 @@ async function main() {
     ground,
     fence,
   };
+
+  // --- WebSocket setup (role assignment / readiness) ---
+  const host = location.hostname || "localhost";
+  const wsProtocol = location.protocol === "https:" ? "wss://" : "ws://";
+  // Assuming your WS server runs on port 3001
+  const wsUrl = wsProtocol + host + ":3001";
+
+  try {
+    socket = new WebSocket(wsUrl);
+    connectionStatus = "Connecting to lobby...";
+
+    socket.addEventListener("open", () => {
+      connectionStatus = "Connected, waiting for role...";
+    });
+
+    socket.addEventListener("message", (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === "role") {
+        myRole = msg.role; // "p1" or "p2"
+        connectionStatus = `You are ${myRole === "p1" ? "Player 1" : "Player 2"}`;
+      } else if (msg.type === "status") {
+        bothReady = msg.bothReady;
+        if (!bothReady) {
+          connectionStatus = "Waiting for the other player to connect...";
+        } else {
+          connectionStatus = "Both players connected. Game starting!";
+        }
+      } else if (msg.type === "room_full") {
+        connectionStatus = "Room is full. Try again later.";
+      }
+    });
+
+    socket.addEventListener("close", () => {
+      connectionStatus = "Disconnected from lobby.";
+      bothReady = false;
+      myRole = null;
+    });
+
+    socket.addEventListener("error", () => {
+      connectionStatus = "WebSocket error.";
+    });
+  } catch (e) {
+    console.error("WS init error:", e);
+    connectionStatus = "Failed to connect to lobby.";
+  }
 
   const game = new Game(ctx, assets);
 
