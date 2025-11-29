@@ -1,34 +1,42 @@
 // src/server/http_ws.js
-// Express static server + WebSocket lobby for Fence Fighters
+// HTTP + WebSocket server for Fence Fighters Online
 
 const path = require("path");
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
+const { GameCore } = require("../game/core");
 
 const PORT = process.env.PORT || 3000;
 
 const app = express();
 
-// Serve static files from /public
+// Serve static files from public/
 const publicDir = path.join(__dirname, "..", "..", "public");
 app.use(express.static(publicDir));
-
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(publicDir, "index.html"));
-});
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// --- Lobby / roles ---
+// --- Game state ---
+const game = new GameCore();
 
-let nextClientId = 1;
-const clients = new Map(); // ws -> { id, role }
-let roleToClient = { p1: null, p2: null };
+// Inputs per player id
+const inputs = {
+  1: { up: false, down: false, left: false, right: false },
+  2: { up: false, down: false, left: false, right: false }
+};
 
-function broadcast(obj) {
-  const msg = JSON.stringify(obj);
+// Map ws -> { playerId }
+const clients = new Map();
+
+// --- Broadcast game state to all connected clients ---
+function broadcastState() {
+  const state = game.exportState();
+  if (!state) return;
+
+  const msg = JSON.stringify({ type: "state", state });
+
   for (const ws of wss.clients) {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(msg);
@@ -36,84 +44,112 @@ function broadcast(obj) {
   }
 }
 
-function sendLobbyState() {
-  const lobby = {
-    type: "lobby",
-    p1: !!roleToClient.p1,
-    p2: !!roleToClient.p2,
-  };
-  broadcast(lobby);
-}
+// --- Game loop (tick) ---
+let lastTime = Date.now();
+const TICK_RATE = 120;           // run at 60 ticks per second
+const MAX_DT = 0.05;            // clamp big spikes (e.g. debugger pauses)
 
-wss.on("connection", (ws) => {
-  const id = nextClientId++;
-  // Assign role: first p1, second p2, rest spectators
-  let role = "spectator";
-  if (!roleToClient.p1) {
-    role = "p1";
-    roleToClient.p1 = ws;
-  } else if (!roleToClient.p2) {
-    role = "p2";
-    roleToClient.p2 = ws;
+setInterval(() => {
+  const now = Date.now();
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+
+  if (dt > MAX_DT) {
+    dt = MAX_DT;
   }
 
-  clients.set(ws, { id, role });
-  console.log(`Client ${id} connected as ${role}`);
+  game.step(dt, inputs);
+  broadcastState();
+}, 1000 / TICK_RATE);
 
-  // Tell the client who it is
-  ws.send(
-    JSON.stringify({
-      type: "hello",
-      id,
-      role,
-    })
+
+// --- WebSocket handling ---
+wss.on("connection", ws => {
+  console.log("Client connected");
+
+  // Assign player 1 or 2 if there is a free slot; otherwise spectator
+  const used = new Set(
+    [...clients.values()]
+      .map(info => info.playerId)
+      .filter(id => id != null)
   );
 
-  // Update lobby for everyone
-  sendLobbyState();
+  let playerId = null;
+  if (!used.has(1)) playerId = 1;
+  else if (!used.has(2)) playerId = 2;
 
-  ws.on("message", (data) => {
+  if (playerId != null) {
+    clients.set(ws, { playerId });
+    inputs[playerId] = { up: false, down: false, left: false, right: false };
+
+    ws.send(JSON.stringify({ type: "welcome", playerId }));
+    console.log(`Assigned as Player ${playerId}`);
+  } else {
+    // extra connections become spectators
+    clients.set(ws, { playerId: null });
+    ws.send(JSON.stringify({ type: "welcome", playerId: null }));
+    console.log("Assigned as spectator");
+  }
+
+  ws.on("message", data => {
     let msg;
     try {
       msg = JSON.parse(data.toString());
-    } catch {
+    } catch (e) {
+      console.warn("Bad JSON from client:", e);
       return;
     }
 
-    // Forward player state to everyone else
-    if (msg.type === "player_state") {
-      // tiny payload, no heavy sim on server
-      for (const [otherWs, info] of clients.entries()) {
-        if (otherWs !== ws && otherWs.readyState === WebSocket.OPEN) {
-          otherWs.send(
-            JSON.stringify({
-              type: "player_state",
-              role: msg.role,
-              x: msg.x,
-              y: msg.y,
-              hp: msg.hp,
-              gold: msg.gold,
-              score: msg.score,
-              monstersKilled: msg.monstersKilled,
-            })
-          );
-        }
+    if (!msg.type) return;
+
+    // Movement input from client.js
+    if (msg.type === "input" && playerId != null) {
+      inputs[playerId] = {
+        up: !!msg.keys?.up,
+        down: !!msg.keys?.down,
+        left: !!msg.keys?.left,
+        right: !!msg.keys?.right
+      };
+    }
+
+    // Weapon selection in WEAPON_SELECT phase
+    else if (msg.type === "weapon_select" && playerId != null) {
+      if (msg.weaponType) {
+        game.handleWeaponChoice(playerId, msg.weaponType);
       }
+    }
+
+    // Shop actions in SHOP phase
+    else if (msg.type === "shop_action" && playerId != null) {
+      if (msg.action) {
+        game.handleShopAction(playerId, msg.action);
+      }
+    }
+
+    // Ready up in SHOP to start next round
+    else if (msg.type === "ready" && playerId != null) {
+      game.handleReady(playerId);
+    }
+
+    // Restart after GAME_OVER
+    else if (msg.type === "restart") {
+      game.handleRestart();
     }
   });
 
   ws.on("close", () => {
-    console.log(`Client ${id} disconnected`);
-    const info = clients.get(ws);
-    if (info) {
-      if (info.role === "p1") roleToClient.p1 = null;
-      if (info.role === "p2") roleToClient.p2 = null;
-    }
+    console.log("Client disconnected");
+
     clients.delete(ws);
-    sendLobbyState();
+
+    if (playerId != null) {
+      // Reset inputs for that slot
+      inputs[playerId] = { up: false, down: false, left: false, right: false };
+    }
   });
 });
 
+// Start server
 server.listen(PORT, () => {
-  console.log(`Fence Fighters server listening on port ${PORT}`);
+  console.log(`Fence Fighters server running on port ${PORT}`);
 });

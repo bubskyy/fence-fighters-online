@@ -1,129 +1,165 @@
 // src/game/core.js
 
 // -----------------------------------------------------
-// Config (mirrors your Python constants)
+// Config
 // -----------------------------------------------------
 
 const SCREEN_WIDTH = 1000;
 const SCREEN_HEIGHT = 600;
 const FENCE_X = SCREEN_WIDTH / 2;
 const ARENA_PADDING = 40;
+
+const PLAYER_SPEED = 240;
 const PLAYER_MAX_HP = 100;
-const PLAYER_SPEED = 250;
+const HEART_HEAL = 25;
+const GOLD_PER_PICKUP = 3;
 
 const WAVE_TIME = 30.0;
-const SHOP_TIME = 20.0;
+const SHOP_TIME = 18.0;
 
-const MAX_MONSTERS = 25;
-const BASE_MONSTER_HP = 30;
-const BASE_MONSTER_SPEED = 110;
-const MONSTER_SPEED_SCALE = 1.05;
-const MONSTER_HP_SCALE = 1.1;
+const BASE_TARGET = 6;
+const TARGET_SCALE = 1.2;
 
-const BASE_MONSTER_SPAWN_INTERVAL = 1.3;
-const MIN_MONSTER_SPAWN_INTERVAL = 0.35;
+const BASE_SPAWN_INTERVAL = 1.8;
+const MIN_SPAWN_INTERVAL = 0.45;
+const SPAWN_INTERVAL_DECAY = 0.035;
 
-const GOLD_DROP_CHANCE = 0.5;
-const GOLD_PER_KILL = 3;
+const MAX_MONSTERS = 26;
+
+const MONSTER_BASE_HP = 30;
+const MONSTER_HP_SCALE = 1.12;
+const MONSTER_BASE_SPEED = 90;
+const MONSTER_SPEED_SCALE = 1.06;
+
+const GOLD_DROP_CHANCE = 0.55;
 const HEART_DROP_CHANCE = 0.08;
-const HEART_HEAL_AMOUNT = 25;
 
-const EXTRA_QUEUE_MAX = 5;
-const EXTRA_MONSTER_BASE_COST = 10;
+const UPGRADE_COST = 10;
+const EXTRA_MONSTERS_COST = 12;
 const EXTRA_MONSTERS_AMOUNT = 4;
 
-const MONSTER_TYPES = {
-  slime: { hpMult: 1.0, speedMult: 1.0 },
-  fast: { hpMult: 0.7, speedMult: 1.5 },
-  tank: { hpMult: 2.0, speedMult: 0.7 }
+// weapon config
+const WEAPON_CONFIG = {
+  knife: {
+    damage: 8,
+    cooldown: 0.28,
+    bulletSpeed: 720
+  },
+  axe: {
+    damage: 15,
+    cooldown: 0.48,
+    bulletSpeed: 620
+  },
+  spear: {
+    damage: 9,
+    cooldown: 0.16,
+    bulletSpeed: 750
+  },
+  bow: {
+    damage: 12,
+    cooldown: 0.4,
+    bulletSpeed: 900
+  }
 };
 
-const WEAPONS = {
-  pea: { damage: 8, cooldown: 0.55, bulletSpeed: 780 }
-};
-
-const HEART_SIZE = 15;
-const GOLD_SIZE = 12;
+const BULLET_LIFETIME = 1.7;
 
 // -----------------------------------------------------
 // Helpers
 // -----------------------------------------------------
 
-let nextId = 1;
-function genId() {
-  return nextId++;
-}
-
-function randomChoice(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function randomRange(a, b) {
   return a + Math.random() * (b - a);
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function rectsOverlap(a, b) {
-  return !(
-    a.x + a.w < b.x ||
-    a.x > b.x + b.w ||
-    a.y + a.h < b.y ||
-    a.y > b.y + b.h
-  );
+function randomChoice(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 // -----------------------------------------------------
-// Core classes
+// Core data classes
 // -----------------------------------------------------
 
 class Player {
   constructor(id, side) {
     this.id = id;
     this.side = side; // "left" or "right"
+
+    this.width = 32;
+    this.height = 32;
+
     this.maxHp = PLAYER_MAX_HP;
     this.hp = PLAYER_MAX_HP;
     this.gold = 0;
     this.score = 0;
     this.monstersKilled = 0;
 
-    this.width = 32;
-    this.height = 32;
-
-    this.weaponType = "pea";
+    this.weaponType = "knife";
     this.weaponLevel = 1;
-    this.weaponCooldownTimer = 0;
+    this.weaponTimer = 0;
     this.hasChosenWeapon = false;
 
-    this.resetPosition();
-  }
+    const cfg = WEAPON_CONFIG[this.weaponType];
+    this.weaponDamage = cfg.damage;
+    this.weaponCooldown = cfg.cooldown;
+    this.bulletSpeed = cfg.bulletSpeed;
 
-  reset() {
-    this.hp = this.maxHp;
-    this.gold = 0;
-    this.score = 0;
-    this.monstersKilled = 0;
-    this.weaponType = "pea";
-    this.weaponLevel = 1;
-    this.weaponCooldownTimer = 0;
-    this.hasChosenWeapon = false;
+    this.aimDx = side === "left" ? 1 : -1;
+    this.aimDy = 0;
+
     this.resetPosition();
   }
 
   resetPosition() {
-    const padding = 80;
-    if (this.side === "left") {
-      this.x = SCREEN_WIDTH * 0.25;
-    } else {
-      this.x = SCREEN_WIDTH * 0.75;
-    }
-    this.y = SCREEN_HEIGHT * 0.6;
+    const midX = this.side === "left" ? SCREEN_WIDTH * 0.25 : SCREEN_WIDTH * 0.75;
+    const midY = SCREEN_HEIGHT * 0.65;
+    this.x = midX;
+    this.y = midY;
+  }
+
+  resetForNewMatch() {
+    this.hp = this.maxHp;
+    this.gold = 0;
+    this.score = 0;
+    this.monstersKilled = 0;
+    this.weaponType = "knife";
+    this.weaponLevel = 1;
+    this.weaponTimer = 0;
+    this.hasChosenWeapon = false;
+
+    const cfg = WEAPON_CONFIG[this.weaponType];
+    this.weaponDamage = cfg.damage;
+    this.weaponCooldown = cfg.cooldown;
+    this.bulletSpeed = cfg.bulletSpeed;
+
+    this.aimDx = this.side === "left" ? 1 : -1;
+    this.aimDy = 0;
+
+    this.resetPosition();
   }
 
   get isAlive() {
     return this.hp > 0;
+  }
+
+  setWeapon(weaponType) {
+    if (!WEAPON_CONFIG[weaponType]) return;
+    this.weaponType = weaponType;
+    this.weaponLevel = 1;
+    this.hasChosenWeapon = true;
+
+    const cfg = WEAPON_CONFIG[this.weaponType];
+    this.weaponDamage = cfg.damage;
+    this.weaponCooldown = cfg.cooldown;
+    this.bulletSpeed = cfg.bulletSpeed;
+  }
+
+  upgradeWeapon() {
+    this.weaponLevel = Math.min(this.weaponLevel + 1, 5);
   }
 
   takeDamage(amount) {
@@ -134,42 +170,72 @@ class Player {
     this.hp = clamp(this.hp + amount, 0, this.maxHp);
   }
 
-  canShoot() {
-    return this.weaponCooldownTimer <= 0 && this.isAlive;
-  }
-
-  updateWeaponCooldown(dt) {
-    if (this.weaponCooldownTimer > 0) {
-      this.weaponCooldownTimer -= dt;
+  updateAim(x, y) {
+    const dx = x - this.x;
+    const dy = y - this.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0.001) {
+      this.aimDx = dx / len;
+      this.aimDy = dy / len;
     }
   }
 
-  setCooldown() {
-    const weapon = WEAPONS[this.weaponType];
-    if (!weapon) return;
-    const levelMult = Math.max(0.4, 1.0 - 0.08 * (this.weaponLevel - 1));
-    this.weaponCooldownTimer = weapon.cooldown * levelMult;
+  canShoot() {
+    return this.weaponTimer <= 0 && this.isAlive;
+  }
+
+  update(dt) {
+    if (this.weaponTimer > 0) {
+      this.weaponTimer -= dt;
+    }
+  }
+
+  shoot(bulletId) {
+    this.weaponTimer = this.weaponCooldown * Math.max(0.5, 1.0 - 0.08 * (this.weaponLevel - 1));
+
+    const spread = this.weaponType === "bow" ? 0.07 : 0.04;
+    const angleOffset = (Math.random() - 0.5) * spread;
+    const baseAngle = Math.atan2(this.aimDy, this.aimDx);
+    const angle = baseAngle + angleOffset;
+
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+
+    const speed = this.bulletSpeed;
+    const damage = this.weaponDamage * (1 + 0.25 * (this.weaponLevel - 1));
+
+    const startX = this.x + dx * 20;
+    const startY = this.y + dy * 20;
+
+    return new Bullet(
+      bulletId,
+      this.id,
+      this.side,
+      startX,
+      startY,
+      dx * speed,
+      dy * speed,
+      damage,
+      this.weaponType
+    );
   }
 }
 
 class Monster {
-  constructor(side, type, hp, speed) {
-    this.id = genId();
-    this.side = side; // "left" or "right"
-    this.type = type;
-
+  constructor(id, side, type, x, y, hp, speed) {
+    this.id = id;
+    this.side = side;   // "left" or "right"
+    this.type = type;   // "slime"/"fast"/"tank"/"spitter"
+    this.x = x;
+    this.y = y;
     this.hp = hp;
-    this.maxHp = hp;
     this.speed = speed;
+    this.radius = 18;
 
-    this.radius = 16;
-
-    // spawn near the top on the correct side
-    const xMin = side === "left" ? ARENA_PADDING : FENCE_X + ARENA_PADDING;
-    const xMax =
-      side === "left" ? FENCE_X - ARENA_PADDING : SCREEN_WIDTH - ARENA_PADDING;
-    this.x = randomRange(xMin, xMax);
-    this.y = randomRange(ARENA_PADDING, SCREEN_HEIGHT * 0.4);
+    this.spitTimer = 0;
+    if (type === "spitter") {
+      this.spitTimer = 1.6 + Math.random() * 1.2;
+    }
   }
 
   get isAlive() {
@@ -182,48 +248,55 @@ class Monster {
 }
 
 class Bullet {
-  constructor(ownerId, side, x, y, vx, vy, damage, weaponType) {
-    this.id = genId();
+  constructor(id, ownerId, side, x, y, vx, vy, damage, weaponType) {
+    this.id = id;
     this.ownerId = ownerId;
-    this.side = side; // "left" or "right"
+    this.side = side;
     this.x = x;
     this.y = y;
     this.vx = vx;
     this.vy = vy;
     this.damage = damage;
     this.weaponType = weaponType;
-    this.radius = 4;
+
+    this.lifetime = BULLET_LIFETIME;
+
+    const pierceMap = { knife: 0, axe: 2, spear: 999, bow: 1 };
+    this.pierce = pierceMap[weaponType] ?? 0;
   }
 }
 
 class GoldDrop {
-  constructor(x, y, amount) {
-    this.id = genId();
+  constructor(id, x, y, amount) {
+    this.id = id;
     this.x = x;
     this.y = y;
     this.amount = amount;
-    this.radius = GOLD_SIZE;
   }
 }
 
 class HeartPickup {
-  constructor(x, y, healAmount) {
-    this.id = genId();
+  constructor(id, x, y, healAmount) {
+    this.id = id;
     this.x = x;
     this.y = y;
     this.healAmount = healAmount;
-    this.radius = HEART_SIZE;
   }
 }
 
 class SpawnWarning {
-  constructor(side, type, x, y, delay) {
-    this.id = genId();
+  constructor(id, side, type, round) {
+    this.id = id;
     this.side = side;
     this.type = type;
-    this.x = x;
-    this.y = y;
-    this.timer = delay; // how long until the monster actually appears
+    this.round = round;
+    this.timer = 0.5 + Math.random() * 0.7;
+
+    const xMin = side === "left" ? ARENA_PADDING : FENCE_X + ARENA_PADDING;
+    const xMax =
+      side === "left" ? FENCE_X - ARENA_PADDING : SCREEN_WIDTH - ARENA_PADDING;
+    this.x = randomRange(xMin, xMax);
+    this.y = randomRange(ARENA_PADDING, SCREEN_HEIGHT * 0.4);
   }
 }
 
@@ -233,10 +306,7 @@ class SpawnWarning {
 
 class GameCore {
   constructor() {
-    this.players = [
-      new Player(1, "left"),
-      new Player(2, "right")
-    ];
+    this.players = [new Player(1, "left"), new Player(2, "right")];
 
     this.monsters = [];
     this.bullets = [];
@@ -244,240 +314,222 @@ class GameCore {
     this.hearts = [];
     this.spawnWarnings = [];
 
-    this.state = "WAITING_PLAYERS"; // WAITING_PLAYERS, WEAPON_SELECT, PLAYING, SHOP, GAME_OVER
+    this.nextMonsterId = 1;
+    this.nextBulletId = 1;
+    this.nextGoldId = 1;
+    this.nextHeartId = 1;
+    this.nextSpawnWarnId = 1;
+
+    this.state = "WEAPON_SELECT"; // WEAPON_SELECT / PLAYING / SHOP / GAME_OVER
     this.round = 1;
     this.waveLeft = WAVE_TIME;
     this.shopLeft = SHOP_TIME;
 
-    this.leftReady = false;
-    this.rightReady = false;
+    this.spawnInterval = 1.8;
+    this.baseTarget = BASE_TARGET;
+    this.baseSpawnedLeft = 0;
+    this.baseSpawnedRight = 0;
+    this.spawnCdLeft = 0;
+    this.spawnCdRight = 0;
 
     this.extraQueueLeft = 0;
     this.extraQueueRight = 0;
     this.extraActiveLeft = 0;
     this.extraActiveRight = 0;
 
-    this.monsterSpawnTimerLeft = BASE_MONSTER_SPAWN_INTERVAL;
-    this.monsterSpawnTimerRight = BASE_MONSTER_SPAWN_INTERVAL;
-
-    // track connected players if needed in server
-    this.connectedPlayers = new Set();
-  }
-
-  // -------------------------------------------------
-  // Player lifecycle
-  // -------------------------------------------------
-
-  setPlayerConnected(playerId, connected) {
-    if (connected) {
-      this.connectedPlayers.add(playerId);
-    } else {
-      this.connectedPlayers.delete(playerId);
-    }
-
-    if (this.connectedPlayers.size >= 2 && this.state === "WAITING_PLAYERS") {
-      this.state = "WEAPON_SELECT";
-      this.leftReady = false;
-      this.rightReady = false;
-      this.players.forEach(p => p.reset());
-    }
-
-    if (this.connectedPlayers.size === 0) {
-      // full reset
-      this.resetGame();
-    }
-  }
-
-  resetGame() {
-    this.players.forEach(p => p.reset());
-    this.monsters = [];
-    this.bullets = [];
-    this.goldDrops = [];
-    this.hearts = [];
-    this.spawnWarnings = [];
-    this.state = "WAITING_PLAYERS";
-    this.round = 1;
-    this.waveLeft = WAVE_TIME;
-    this.shopLeft = SHOP_TIME;
     this.leftReady = false;
     this.rightReady = false;
-    this.extraQueueLeft = 0;
-    this.extraQueueRight = 0;
-    this.extraActiveLeft = 0;
-    this.extraActiveRight = 0;
-    this.monsterSpawnTimerLeft = BASE_MONSTER_SPAWN_INTERVAL;
-    this.monsterSpawnTimerRight = BASE_MONSTER_SPAWN_INTERVAL;
+  }
+
+  resetMatch() {
+    const fresh = new GameCore();
+    Object.assign(this, fresh);
+  }
+
+  getPlayer(id) {
+    return this.players.find(p => p.id === id) || null;
   }
 
   // -------------------------------------------------
-  // Weapon select & shop actions
+  // Server-driven actions
   // -------------------------------------------------
 
   handleWeaponChoice(playerId, weaponType) {
-    const p = this.players.find(pl => pl.id === playerId);
-    if (!p) return;
     if (this.state !== "WEAPON_SELECT") return;
-
-    if (!WEAPONS[weaponType]) return;
-
-    p.weaponType = weaponType;
-    p.weaponLevel = 1;
-    p.hasChosenWeapon = true;
-    if (p.side === "left") {
-      this.leftReady = true;
-    } else {
-      this.rightReady = true;
-    }
-
-    if (this.leftReady && this.rightReady) {
-      this.startWave();
-    }
+    const p = this.getPlayer(playerId);
+    if (!p) return;
+    p.setWeapon(weaponType);
   }
 
   handleShopAction(playerId, action) {
-    const p = this.players.find(pl => pl.id === playerId);
-    if (!p) return;
     if (this.state !== "SHOP") return;
+    const p = this.getPlayer(playerId);
+    if (!p) return;
 
-    if (action === "start_round") {
-      if (p.side === "left") {
-        this.leftReady = true;
-      } else {
-        this.rightReady = true;
+    const isLeft = p.side === "left";
+
+    if (action === "upgrade") {
+      if (p.gold >= UPGRADE_COST) {
+        p.gold -= UPGRADE_COST;
+        p.upgradeWeapon();
       }
-      if (this.leftReady && this.rightReady) {
-        this.startWave();
-      }
-      return;
-    }
-
-    // Example shop actions
-    if (action === "heal" && p.gold >= 8) {
-      p.gold -= 8;
-      p.heal(30);
-      return;
-    }
-
-    if (action === "upgrade_weapon" && p.gold >= 12) {
-      p.gold -= 12;
-      p.weaponLevel = Math.min(p.weaponLevel + 1, 5);
-      return;
-    }
-
-    if (action === "extra_monsters") {
-      let cost = EXTRA_MONSTER_BASE_COST + (p.side === "left" ? this.extraActiveLeft : this.extraActiveRight) * 4;
-      if (p.gold >= cost) {
-        p.gold -= cost;
-        if (p.side === "left") {
-          this.extraQueueRight = Math.min(
-            EXTRA_QUEUE_MAX,
-            this.extraQueueRight + 1
-          );
+    } else if (action === "send_mobs") {
+      if (p.gold >= EXTRA_MONSTERS_COST) {
+        p.gold -= EXTRA_MONSTERS_COST;
+        if (isLeft) {
+          this.extraQueueRight += 1;
           this.extraActiveLeft += 1;
         } else {
-          this.extraQueueLeft = Math.min(
-            EXTRA_QUEUE_MAX,
-            this.extraQueueLeft + 1
-          );
+          this.extraQueueLeft += 1;
           this.extraActiveRight += 1;
         }
       }
     }
   }
 
+  handleReady(playerId) {
+    if (this.state !== "SHOP") return;
+    const p = this.getPlayer(playerId);
+    if (!p) return;
+    if (p.side === "left") this.leftReady = true;
+    else this.rightReady = true;
+  }
+
   handleRestart() {
-    if (this.state === "GAME_OVER") {
-      this.round = 1;
-      this.players.forEach(p => p.reset());
-      this.monsters = [];
-      this.bullets = [];
-      this.goldDrops = [];
-      this.hearts = [];
-      this.spawnWarnings = [];
-      this.waveLeft = WAVE_TIME;
-      this.shopLeft = SHOP_TIME;
-      this.leftReady = false;
-      this.rightReady = false;
-      this.extraQueueLeft = 0;
-      this.extraQueueRight = 0;
-      this.extraActiveLeft = 0;
-      this.extraActiveRight = 0;
-      this.monsterSpawnTimerLeft = BASE_MONSTER_SPAWN_INTERVAL;
-      this.monsterSpawnTimerRight = BASE_MONSTER_SPAWN_INTERVAL;
-      this.state = "WEAPON_SELECT";
+    if (this.state !== "GAME_OVER") return;
+    this.resetMatch();
+  }
+
+  // -------------------------------------------------
+  // Spawning / utilities
+  // -------------------------------------------------
+
+  spawnWarningOnSide(side) {
+    // choose type (same weights as Python)
+    const r = Math.random();
+    let type = "slime";
+    if (r < 0.6) type = "slime";
+    else if (r < 0.8) type = "fast";
+    else if (r < 0.95) type = "tank";
+    else type = "spitter";
+
+    const w = new SpawnWarning(this.nextSpawnWarnId++, side, type, this.round);
+    this.spawnWarnings.push(w);
+  }
+
+  spawnMonsterFromWarning(warn) {
+    const side = warn.side;
+    const type = warn.type;
+    const round = warn.round;
+
+    const hpBase = MONSTER_BASE_HP * Math.pow(MONSTER_HP_SCALE, round - 1);
+    const speedBase = MONSTER_BASE_SPEED * Math.pow(MONSTER_SPEED_SCALE, round - 1);
+
+    let hpMult = 1.0;
+    let speedMult = 1.0;
+    if (type === "fast") {
+      hpMult = 0.7;
+      speedMult = 1.5;
+    } else if (type === "tank") {
+      hpMult = 2.2;
+      speedMult = 0.7;
+    } else if (type === "spitter") {
+      hpMult = 1.1;
+      speedMult = 0.8;
+    }
+
+    const hp = Math.max(10, Math.round(hpBase * hpMult));
+    const speed = Math.max(50, speedBase * speedMult);
+
+    const m = new Monster(
+      this.nextMonsterId++,
+      side,
+      type,
+      warn.x,
+      warn.y,
+      hp,
+      speed
+    );
+    this.monsters.push(m);
+  }
+
+  spawnBaseMonster(side) {
+    if (this.monsters.length >= MAX_MONSTERS) return;
+    this.spawnWarningOnSide(side);
+    if (side === "left") this.baseSpawnedLeft += 1;
+    else this.baseSpawnedRight += 1;
+  }
+
+  spawnExtraMonsters(side) {
+    for (let i = 0; i < EXTRA_MONSTERS_AMOUNT; i++) {
+      this.spawnWarningOnSide(side);
     }
   }
 
-  startWave() {
+  // -------------------------------------------------
+  // Step
+  // -------------------------------------------------
+
+  step(dt, inputs) {
+    switch (this.state) {
+      case "WEAPON_SELECT":
+        this.updateWeaponSelect(dt);
+        break;
+      case "PLAYING":
+        this.updatePlaying(dt, inputs);
+        break;
+      case "SHOP":
+        this.updateShop(dt);
+        break;
+      case "GAME_OVER":
+        break;
+    }
+  }
+
+  updateWeaponSelect(dt) {
+    let leftChosen = false;
+    let rightChosen = false;
+
+    for (const p of this.players) {
+      p.update(dt);
+      if (p.side === "left" && p.hasChosenWeapon) leftChosen = true;
+      if (p.side === "right" && p.hasChosenWeapon) rightChosen = true;
+    }
+
+    if (leftChosen && rightChosen) {
+      this.startNewRound();
+    }
+  }
+
+  startNewRound() {
     this.state = "PLAYING";
     this.waveLeft = WAVE_TIME;
-    this.shopLeft = SHOP_TIME;
+
     this.monsters = [];
     this.bullets = [];
     this.goldDrops = [];
     this.hearts = [];
     this.spawnWarnings = [];
-    this.leftReady = false;
-    this.rightReady = false;
-    this.monsterSpawnTimerLeft = this.computeSpawnInterval();
-    this.monsterSpawnTimerRight = this.computeSpawnInterval();
-  }
 
-  computeSpawnInterval() {
-    const factor = Math.max(
-      0,
-      1 - (this.round - 1) * 0.06
-    );
+    this.baseTarget = Math.round(this.baseTarget * TARGET_SCALE);
+    this.baseSpawnedLeft = 0;
+    this.baseSpawnedRight = 0;
+
+    const factor = Math.max(0, 1 - (this.round - 1) * SPAWN_INTERVAL_DECAY);
     const interval =
-      MIN_MONSTER_SPAWN_INTERVAL +
-      factor * (BASE_MONSTER_SPAWN_INTERVAL - MIN_MONSTER_SPAWN_INTERVAL);
-    return Math.max(MIN_MONSTER_SPAWN_INTERVAL, interval);
+      MIN_SPAWN_INTERVAL +
+      factor * (BASE_SPAWN_INTERVAL - MIN_SPAWN_INTERVAL);
+    this.spawnInterval = Math.max(MIN_SPAWN_INTERVAL, interval);
+
+    this.spawnCdLeft = 0.5;
+    this.spawnCdRight = 0.5;
   }
 
-  // -------------------------------------------------
-  // Main step
-  // -------------------------------------------------
-
-  step(dt, input) {
-    // input is something like:
-    // {
-    //   1: { up: bool, down: bool, left: bool, right: bool, shoot: bool? },
-    //   2: { ... }
-    // }
-
-    if (this.state === "WAITING_PLAYERS") {
-      return;
-    }
-
-    if (this.state === "WEAPON_SELECT") {
-      this.players.forEach(p => p.updateWeaponCooldown(dt));
-      return;
-    }
-
-    if (this.state === "PLAYING") {
-      this.updateWave(dt, input);
-      return;
-    }
-
-    if (this.state === "SHOP") {
-      this.updateShop(dt);
-      return;
-    }
-
-    if (this.state === "GAME_OVER") {
-      return;
-    }
-  }
-
-  // -------------------------------------------------
-  // Wave logic
-  // -------------------------------------------------
-
-  updateWave(dt, input) {
-    this.waveLeft -= dt;
-    if (this.waveLeft <= 0) {
-      this.waveLeft = 0;
-      if (this.state === "PLAYING") {
+  updatePlaying(dt, inputs) {
+    if (this.waveLeft > 0) {
+      this.waveLeft -= dt;
+      if (this.waveLeft <= 0) {
+        this.waveLeft = 0;
         this.state = "SHOP";
         this.shopLeft = SHOP_TIME;
         this.leftReady = false;
@@ -485,344 +537,255 @@ class GameCore {
       }
     }
 
+    // update players
     for (const p of this.players) {
-      p.updateWeaponCooldown(dt);
-      const inp = input[p.id] || {};
-      this.movePlayer(p, dt, inp);
-      this.handlePlayerShooting(p, dt, inp);
-    }
+      p.update(dt);
 
-    this.updateSpawnWarnings(dt);
-    this.updateMonsters(dt);
-    this.updateBullets(dt);
-    this.handleCollisions();
+      const inp = inputs[p.id] || {};
+      let dx = 0;
+      let dy = 0;
+      if (inp.up) dy -= 1;
+      if (inp.down) dy += 1;
+      if (inp.left) dx -= 1;
+      if (inp.right) dx += 1;
 
-    if (this.players.every(p => !p.isAlive)) {
-      this.state = "GAME_OVER";
-    }
-  }
+      let len = Math.hypot(dx, dy);
+      if (len > 0) {
+        dx /= len;
+        dy /= len;
+        p.x += dx * PLAYER_SPEED * dt;
+        p.y += dy * PLAYER_SPEED * dt;
+      }
 
-  movePlayer(p, dt, inp) {
-    if (!p.isAlive) return;
+      const minX =
+        p.side === "left"
+          ? ARENA_PADDING + p.width / 2
+          : FENCE_X + ARENA_PADDING + p.width / 2;
+      const maxX =
+        p.side === "left"
+          ? FENCE_X - ARENA_PADDING - p.width / 2
+          : SCREEN_WIDTH - ARENA_PADDING - p.width / 2;
+      const minY = ARENA_PADDING + p.height / 2;
+      const maxY = SCREEN_HEIGHT - ARENA_PADDING - p.height / 2;
+      p.x = clamp(p.x, minX, maxX);
+      p.y = clamp(p.y, minY, maxY);
 
-    let vx = 0;
-    let vy = 0;
-    if (inp.up) vy -= 1;
-    if (inp.down) vy += 1;
-    if (inp.left) vx -= 1;
-    if (inp.right) vx += 1;
+      p.updateAim(p.side === "left" ? FENCE_X - 20 : FENCE_X + 20, ARENA_PADDING);
 
-    const len = Math.hypot(vx, vy);
-    if (len > 0) {
-      vx /= len;
-      vy /= len;
-    }
-
-    const speed = PLAYER_SPEED;
-    let nx = p.x + vx * speed * dt;
-    let ny = p.y + vy * speed * dt;
-
-    const minX =
-      p.side === "left"
-        ? ARENA_PADDING
-        : FENCE_X + ARENA_PADDING + p.width / 2;
-    const maxX =
-      p.side === "left"
-        ? FENCE_X - ARENA_PADDING - p.width / 2
-        : SCREEN_WIDTH - ARENA_PADDING;
-    const minY = ARENA_PADDING;
-    const maxY = SCREEN_HEIGHT - ARENA_PADDING;
-
-    nx = clamp(nx, minX, maxX);
-    ny = clamp(ny, minY, maxY);
-
-    p.x = nx;
-    p.y = ny;
-  }
-
-  handlePlayerShooting(p, dt, inp) {
-    if (!p.isAlive) return;
-    const wantShoot = inp.shoot ?? true;
-
-    if (wantShoot && p.canShoot()) {
-      const weapon = WEAPONS[p.weaponType];
-      if (!weapon) return;
-
-      const dirX = 0;
-      const dirY = -1;
-
-      const levelDamageMult = 1.0 + 0.25 * (p.weaponLevel - 1);
-      const damage = weapon.damage * levelDamageMult;
-      const speed = weapon.bulletSpeed;
-
-      const b = new Bullet(
-        p.id,
-        p.side,
-        p.x,
-        p.y - 8,
-        dirX * speed,
-        dirY * speed,
-        damage,
-        p.weaponType
-      );
-      this.bullets.push(b);
-      p.setCooldown();
-    }
-  }
-
-  updateSpawnWarnings(dt) {
-    const created = [];
-
-    for (let i = this.spawnWarnings.length - 1; i >= 0; i--) {
-      const w = this.spawnWarnings[i];
-      w.timer -= dt;
-      if (w.timer <= 0) {
-        const side = w.side;
-        const type = w.type;
-        const baseHp = BASE_MONSTER_HP * Math.pow(MONSTER_HP_SCALE, this.round - 1);
-        const baseSpeed =
-          BASE_MONSTER_SPEED * Math.pow(MONSTER_SPEED_SCALE, this.round - 1);
-        const mult = MONSTER_TYPES[type] || MONSTER_TYPES.slime;
-
-        const hp = Math.max(
-          10,
-          Math.round(baseHp * mult.hpMult)
-        );
-        const speed = Math.max(50, baseSpeed * mult.speedMult);
-
-        const m = new Monster(side, type, hp, speed);
-        m.x = w.x;
-        m.y = w.y;
-        created.push(m);
-        this.spawnWarnings.splice(i, 1);
+      if (p.canShoot()) {
+        const b = p.shoot(this.nextBulletId++);
+        this.bullets.push(b);
       }
     }
 
-    this.monsters.push(...created);
-  }
-
-  spawnMonster(side) {
-    if (this.monsters.length >= MAX_MONSTERS) return;
-
-    const types = Object.keys(MONSTER_TYPES);
-    const type = randomChoice(types);
-
-    const baseHp = BASE_MONSTER_HP * Math.pow(MONSTER_HP_SCALE, this.round - 1);
-    const baseSpeed =
-      BASE_MONSTER_SPEED * Math.pow(MONSTER_SPEED_SCALE, this.round - 1);
-    const mult = MONSTER_TYPES[type] || MONSTER_TYPES.slime;
-
-    const hp = Math.max(
-      10,
-      Math.round(baseHp * mult.hpMult)
-    );
-    const speed = Math.max(50, baseSpeed * mult.speedMult);
-
-    const xMin = side === "left" ? ARENA_PADDING : FENCE_X + ARENA_PADDING;
-    const xMax =
-      side === "left" ? FENCE_X - ARENA_PADDING : SCREEN_WIDTH - ARENA_PADDING;
-    const x = randomRange(xMin, xMax);
-    const y = randomRange(ARENA_PADDING, SCREEN_HEIGHT * 0.4);
-
-    const delay = 0.3 + Math.random() * 0.5;
-    const warning = new SpawnWarning(side, type, x, y, delay);
-    this.spawnWarnings.push(warning);
-  }
-
-  updateMonsters(dt) {
+    // spawn base monsters
     if (this.waveLeft > 0) {
-      this.monsterSpawnTimerLeft -= dt;
-      if (this.monsterSpawnTimerLeft <= 0) {
-        this.spawnMonster("left");
-        this.monsterSpawnTimerLeft = this.computeSpawnInterval();
-        if (this.extraQueueLeft > 0) {
-          for (let i = 0; i < EXTRA_MONSTERS_AMOUNT; i++) {
-            this.spawnMonster("left");
-          }
-          this.extraQueueLeft -= 1;
+      if (this.baseSpawnedLeft < this.baseTarget) {
+        this.spawnCdLeft -= dt;
+        if (this.spawnCdLeft <= 0) {
+          this.spawnBaseMonster("left");
+          this.spawnCdLeft = this.spawnInterval;
         }
       }
-
-      this.monsterSpawnTimerRight -= dt;
-      if (this.monsterSpawnTimerRight <= 0) {
-        this.spawnMonster("right");
-        this.monsterSpawnTimerRight = this.computeSpawnInterval();
-        if (this.extraQueueRight > 0) {
-          for (let i = 0; i < EXTRA_MONSTERS_AMOUNT; i++) {
-            this.spawnMonster("right");
-          }
-          this.extraQueueRight -= 1;
+      if (this.baseSpawnedRight < this.baseTarget) {
+        this.spawnCdRight -= dt;
+        if (this.spawnCdRight <= 0) {
+          this.spawnBaseMonster("right");
+          this.spawnCdRight = this.spawnInterval;
         }
+      }
+      if (this.extraQueueLeft > 0) {
+        this.spawnExtraMonsters("left");
+        this.extraQueueLeft -= 1;
+      }
+      if (this.extraQueueRight > 0) {
+        this.spawnExtraMonsters("right");
+        this.extraQueueRight -= 1;
       }
     }
 
-    for (const m of this.monsters) {
-      const targetPlayers = this.players.filter(
-        p => p.side === m.side && p.isAlive
-      );
-      if (targetPlayers.length === 0) continue;
+    // update spawn warnings
+    for (const w of this.spawnWarnings) {
+      w.timer -= dt;
+    }
+    const newlySpawned = [];
+    this.spawnWarnings = this.spawnWarnings.filter(w => {
+      if (w.timer <= 0) {
+        newlySpawned.push(w);
+        return false;
+      }
+      return true;
+    });
+    for (const w of newlySpawned) {
+      this.spawnMonsterFromWarning(w);
+    }
 
-      let closest = targetPlayers[0];
+    // update monsters
+    for (const m of this.monsters) {
+      if (!m.isAlive) continue;
+
+      const sidePlayers = this.players.filter(p => p.side === m.side && p.isAlive);
+      if (sidePlayers.length === 0) continue;
+
+      let target = sidePlayers[0];
       let bestDist = Infinity;
-      for (const p of targetPlayers) {
+      for (const p of sidePlayers) {
         const d = Math.hypot(p.x - m.x, p.y - m.y);
         if (d < bestDist) {
           bestDist = d;
-          closest = p;
+          target = p;
         }
       }
 
-      if (closest) {
-        const dx = closest.x - m.x;
-        const dy = closest.y - m.y;
-        const dist = Math.hypot(dx, dy) || 1;
-        const vx = (dx / dist) * m.speed;
-        const vy = (dy / dist) * m.speed;
+      if (target) {
+        const dx = target.x - m.x;
+        const dy = target.y - m.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const vx = (dx / len) * m.speed;
+        const vy = (dy / len) * m.speed;
         m.x += vx * dt;
         m.y += vy * dt;
-
-        const minX =
-          m.side === "left"
-            ? ARENA_PADDING + m.radius
-            : FENCE_X + ARENA_PADDING + m.radius;
-        const maxX =
-          m.side === "left"
-            ? FENCE_X - ARENA_PADDING - m.radius
-            : SCREEN_WIDTH - ARENA_PADDING - m.radius;
-        const minY = ARENA_PADDING + m.radius;
-        const maxY = SCREEN_HEIGHT - ARENA_PADDING - m.radius;
-
-        m.x = clamp(m.x, minX, maxX);
-        m.y = clamp(m.y, minY, maxY);
       }
+
+      const minX =
+        m.side === "left"
+          ? ARENA_PADDING + m.radius
+          : FENCE_X + ARENA_PADDING + m.radius;
+      const maxX =
+        m.side === "left"
+          ? FENCE_X - ARENA_PADDING - m.radius
+          : SCREEN_WIDTH - ARENA_PADDING - m.radius;
+      const minY = ARENA_PADDING + m.radius;
+      const maxY = SCREEN_HEIGHT - ARENA_PADDING - m.radius;
+      m.x = clamp(m.x, minX, maxX);
+      m.y = clamp(m.y, minY, maxY);
     }
 
-    this.monsters = this.monsters.filter(m => m.isAlive);
-  }
-
-  updateBullets(dt) {
+    // update bullets
     for (const b of this.bullets) {
       b.x += b.vx * dt;
       b.y += b.vy * dt;
+      b.lifetime -= dt;
     }
 
-    this.bullets = this.bullets.filter(b => {
-      return (
-        b.x >= 0 &&
-        b.x <= SCREEN_WIDTH &&
-        b.y >= 0 &&
-        b.y <= SCREEN_HEIGHT
-      );
-    });
-  }
+    this.bullets = this.bullets.filter(
+      b =>
+        b.lifetime > 0 &&
+        b.x >= -50 &&
+        b.x <= SCREEN_WIDTH + 50 &&
+        b.y >= -50 &&
+        b.y <= SCREEN_HEIGHT + 50
+    );
 
-  handleCollisions() {
+    // collisions bullets ↔ monsters
     for (const b of this.bullets) {
-      const pOwner = this.players.find(p => p.id === b.ownerId);
-      if (!pOwner) continue;
-
-      const side = b.side;
+      if (b._dead) continue;
+      let hits = 0;
       for (const m of this.monsters) {
-        if (m.side !== side) continue;
-
-        const dx = m.x - b.x;
-        const dy = m.y - b.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist <= m.radius + b.radius) {
+        if (!m.isAlive) continue;
+        if (m.side !== b.side) continue;
+        const dist = Math.hypot(m.x - b.x, m.y - b.y);
+        if (dist <= m.radius + 5) {
           m.takeDamage(b.damage);
-          b._hit = true;
+          hits += 1;
           if (!m.isAlive) {
-            pOwner.monstersKilled += 1;
-            pOwner.score += 10;
-
-            if (Math.random() < GOLD_DROP_CHANCE) {
-              const goldAmount = GOLD_PER_KILL;
-              this.goldDrops.push(
-                new GoldDrop(m.x, m.y, goldAmount)
-              );
-            }
-
-            if (Math.random() < HEART_DROP_CHANCE) {
-              this.hearts.push(
-                new HeartPickup(m.x, m.y, HEART_HEAL_AMOUNT)
-              );
+            const owner = this.getPlayer(b.ownerId);
+            if (owner) {
+              owner.monstersKilled += 1;
+              owner.score += 15;
+              if (Math.random() < GOLD_DROP_CHANCE) {
+                const gold = new GoldDrop(
+                  this.nextGoldId++,
+                  m.x,
+                  m.y,
+                  GOLD_PER_PICKUP
+                );
+                this.goldDrops.push(gold);
+              }
+              if (Math.random() < HEART_DROP_CHANCE) {
+                const heart = new HeartPickup(
+                  this.nextHeartId++,
+                  m.x,
+                  m.y,
+                  HEART_HEAL
+                );
+                this.hearts.push(heart);
+              }
             }
           }
         }
       }
+      if (hits > 0) {
+        if (b.pierce <= 0) {
+          b._dead = true;
+        } else {
+          b.pierce -= hits;
+        }
+      }
     }
 
-    this.bullets = this.bullets.filter(b => !b._hit);
+    this.bullets = this.bullets.filter(b => !b._dead);
 
-    for (const p of this.players) {
-      if (!p.isAlive) continue;
-
-      const pRect = {
-        x: p.x - p.width / 2,
-        y: p.y - p.height / 2,
-        w: p.width,
-        h: p.height
-      };
-
-      for (const m of this.monsters) {
-        if (m.side !== p.side) continue;
-        const mRect = {
-          x: m.x - m.radius,
-          y: m.y - m.radius,
-          w: m.radius * 2,
-          h: m.radius * 2
-        };
-
-        if (rectsOverlap(pRect, mRect)) {
+    // collisions monsters ↔ players
+    for (const m of this.monsters) {
+      if (!m.isAlive) continue;
+      for (const p of this.players) {
+        if (!p.isAlive) continue;
+        if (p.side !== m.side) continue;
+        const dist = Math.hypot(p.x - m.x, p.y - m.y);
+        if (dist <= m.radius + 18) {
           p.takeDamage(8);
           m.takeDamage(9999);
         }
       }
+    }
 
+    this.monsters = this.monsters.filter(m => m.isAlive);
+
+    // pickups
+    for (const p of this.players) {
+      if (!p.isAlive) continue;
       for (const g of this.goldDrops) {
-        const gRect = {
-          x: g.x - g.radius,
-          y: g.y - g.radius,
-          w: g.radius * 2,
-          h: g.radius * 2
-        };
-        if (rectsOverlap(pRect, gRect)) {
+        const dist = Math.hypot(p.x - g.x, p.y - g.y);
+        if (dist <= 16) {
           p.gold += g.amount;
-          g._picked = true;
+          g._taken = true;
         }
       }
-
       for (const h of this.hearts) {
-        const r = {
-          x: h.x - h.radius,
-          y: h.y - h.radius,
-          w: h.radius * 2,
-          h: h.radius * 2
-        };
-        if (rectsOverlap(pRect, r)) {
+        const dist = Math.hypot(p.x - h.x, p.y - h.y);
+        if (dist <= 16) {
           p.heal(h.healAmount);
-          h._picked = true;
+          h._taken = true;
         }
       }
     }
 
-    this.goldDrops = this.goldDrops.filter(g => !g._picked);
-    this.hearts = this.hearts.filter(h => !h._picked);
-  }
+    this.goldDrops = this.goldDrops.filter(g => !g._taken);
+    this.hearts = this.hearts.filter(h => !h._taken);
 
-  // -------------------------------------------------
-  // Shop logic
-  // -------------------------------------------------
+    // game over?
+    const aliveLeft = this.players.find(p => p.side === "left" && p.isAlive);
+    const aliveRight = this.players.find(p => p.side === "right" && p.isAlive);
+    if (!aliveLeft && !aliveRight) {
+      this.state = "GAME_OVER";
+    }
+  }
 
   updateShop(dt) {
     this.shopLeft -= dt;
     if (this.shopLeft <= 0) {
       this.shopLeft = 0;
-      this.leftReady = true;
-      this.rightReady = true;
-      if (this.state === "SHOP") {
-        this.startWave();
-      }
+      this.state = "PLAYING";
+      this.round += 1;
+      this.startNewRound();
+      return;
+    }
+
+    if (this.leftReady && this.rightReady) {
+      this.state = "PLAYING";
+      this.round += 1;
+      this.startNewRound();
     }
   }
 
