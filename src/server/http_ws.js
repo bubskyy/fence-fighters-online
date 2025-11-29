@@ -2,14 +2,14 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const WebSocket = require("ws");
 const { GameCore } = require("../game/core");
+const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 3000;
 const TICK_RATE = 30;
 const publicDir = path.join(__dirname, "..", "..", "public");
 
-// Basic static file server
+// Static file server (serves public/)
 const server = http.createServer((req, res) => {
   let filePath = req.url;
   if (!filePath || filePath === "/") {
@@ -30,6 +30,7 @@ const server = http.createServer((req, res) => {
     if (filePath.endsWith(".html")) contentType = "text/html";
     else if (filePath.endsWith(".js")) contentType = "text/javascript";
     else if (filePath.endsWith(".css")) contentType = "text/css";
+    else if (filePath.endsWith(".png")) contentType = "image/png";
 
     res.writeHead(200, { "Content-Type": contentType });
     res.end(data);
@@ -40,7 +41,6 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 
 let game = new GameCore();
-let tick = 0;
 
 // Map ws -> { playerId, lastInput }
 const clients = new Map();
@@ -53,6 +53,7 @@ wss.on("connection", ws => {
   if (usedIds.has(1)) playerId = 2;
 
   clients.set(ws, { playerId, lastInput: {} });
+
   ws.send(JSON.stringify({ type: "welcome", playerId }));
 
   ws.on("message", msg => {
@@ -62,10 +63,27 @@ wss.on("connection", ws => {
     } catch {
       return;
     }
+
+    const client = clients.get(ws);
+    if (!client) return;
+
     if (data.type === "input") {
-      const client = clients.get(ws);
-      if (!client) return;
+      // movement input
       client.lastInput = data.keys || {};
+    } else if (data.type === "weapon_select") {
+      // weapon select in WEAPON_SELECT state
+      const weapon = data.weaponType;
+      game.handleWeaponChoice(client.playerId, weapon);
+    } else if (data.type === "shop_action") {
+      // upgrade / send_mobs in SHOP state
+      const action = data.action;
+      game.handleShopAction(client.playerId, action);
+    } else if (data.type === "ready") {
+      // player ready in SHOP
+      game.handleReady(client.playerId);
+    } else if (data.type === "restart") {
+      // restart from GAME_OVER
+      game.handleRestart();
     }
   });
 
@@ -77,35 +95,20 @@ wss.on("connection", ws => {
 
 // Game loop
 setInterval(() => {
+  // collect inputs for each player
   const inputs = {};
-  for (const [ws, info] of clients.entries()) {
+  for (const [_ws, info] of clients.entries()) {
     inputs[info.playerId] = info.lastInput || {};
   }
 
   game.step(1 / TICK_RATE, inputs);
   const state = game.exportState();
 
-  const payload = JSON.stringify({ type: "state", tick, state });
+  const payload = JSON.stringify({ type: "state", state });
   for (const ws of clients.keys()) {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(payload);
     }
-  }
-
-  if (state.state === "GAME_OVER") {
-    const statsPayload = JSON.stringify({
-      type: "game_over",
-      ...game.exportMatchStats()
-    });
-    for (const ws of clients.keys()) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(statsPayload);
-      }
-    }
-    game.reset();
-    tick = 0;
-  } else {
-    tick += 1;
   }
 }, 1000 / TICK_RATE);
 

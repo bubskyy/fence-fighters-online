@@ -10,34 +10,25 @@ const FENCE_X = SCREEN_WIDTH / 2;
 const TILE_SIZE = 64;
 
 // -----------------------------------------------------
-// Assets loading
+// Assets loading (PNG from /assets/...)
 // -----------------------------------------------------
 
 const assetPaths = {
-  // tiles
   ground: "assets/tiles/ground.png",
   fence: "assets/tiles/fence.png",
 
-  // players
   player1: "assets/characters/player1.png",
   player2: "assets/characters/player2.png",
 
-  // monsters
   slime: "assets/monsters/slime.png",
   fast: "assets/monsters/fast.png",
   tank: "assets/monsters/tank.png",
   spitter: "assets/monsters/spitter.png",
 
-  // weapons (for future, e.g. drawing weapon in hand)
   knife: "assets/weapons/knife.png",
   axe: "assets/weapons/axe.png",
   spear: "assets/weapons/spear.png",
-  bow: "assets/weapons/bow.png",
-  arrow: "assets/weapons/arrow.png",
-
-  // pickups (for future)
-  gold: "assets/pickups/gold.png",
-  heart: "assets/pickups/heart.png"
+  bow: "assets/weapons/bow.png"
 };
 
 const assets = {};
@@ -60,8 +51,7 @@ function loadAssets(paths) {
         }
       };
       img.onerror = () => {
-        console.warn("Failed to load", url, "– using fallback");
-        // still resolve to not block game; just leave undefined
+        console.warn("Failed to load", url);
         loaded += 1;
         if (loaded === total) {
           assetsLoaded = true;
@@ -84,12 +74,7 @@ const socket = new WebSocket(wsUrl);
 let playerId = null;
 let lastState = null;
 
-const keyState = {
-  up: false,
-  down: false,
-  left: false,
-  right: false
-};
+const keyState = { up: false, down: false, left: false, right: false };
 
 socket.addEventListener("open", () => {
   statusEl.textContent = "Connecting to game...";
@@ -97,48 +82,100 @@ socket.addEventListener("open", () => {
 
 socket.addEventListener("message", event => {
   const msg = JSON.parse(event.data);
-
   if (msg.type === "welcome") {
     playerId = msg.playerId;
-    statusEl.textContent = `Connected as Player ${playerId} (P1=WASD, P2=Arrows)`;
+    statusEl.textContent = `Connected as Player ${playerId}`;
   } else if (msg.type === "state") {
     lastState = msg.state;
-  } else if (msg.type === "game_over") {
-    // server auto-restarts match, we just show a message briefly
-    statusEl.textContent = "Game over – restarting match...";
   }
 });
 
 socket.addEventListener("close", () => {
-  statusEl.textContent = "Disconnected from server";
+  statusEl.textContent = "Disconnected";
 });
 
-function sendInput() {
-  if (socket.readyState === WebSocket.OPEN && playerId != null) {
-    socket.send(JSON.stringify({ type: "input", keys: keyState }));
+function send(type, payload = {}) {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type, ...payload }));
   }
 }
 
+function sendInput() {
+  send("input", { keys: keyState });
+}
+
 // -----------------------------------------------------
-// Input handling (P1: WASD, P2: Arrows)
+// Input handling
 // -----------------------------------------------------
 
 window.addEventListener("keydown", e => {
-  if (playerId === 1) {
-    if (e.key === "w" || e.key === "W") keyState.up = true;
-    if (e.key === "s" || e.key === "S") keyState.down = true;
-    if (e.key === "a" || e.key === "A") keyState.left = true;
-    if (e.key === "d" || e.key === "D") keyState.right = true;
-  } else if (playerId === 2) {
-    if (e.key === "ArrowUp") keyState.up = true;
-    if (e.key === "ArrowDown") keyState.down = true;
-    if (e.key === "ArrowLeft") keyState.left = true;
-    if (e.key === "ArrowRight") keyState.right = true;
+  const st = lastState ? lastState.state : null;
+
+  // Movement only in PLAYING
+  if (st === "PLAYING") {
+    if (playerId === 1) {
+      if (e.key === "w" || e.key === "W") keyState.up = true;
+      if (e.key === "s" || e.key === "S") keyState.down = true;
+      if (e.key === "a" || e.key === "A") keyState.left = true;
+      if (e.key === "d" || e.key === "D") keyState.right = true;
+    } else if (playerId === 2) {
+      if (e.key === "ArrowUp") keyState.up = true;
+      if (e.key === "ArrowDown") keyState.down = true;
+      if (e.key === "ArrowLeft") keyState.left = true;
+      if (e.key === "ArrowRight") keyState.right = true;
+    }
+    sendInput();
   }
-  sendInput();
+
+  // Weapon select keys
+  if (st === "WEAPON_SELECT") {
+    if (playerId === 1) {
+      if (e.key === "1") send("weapon_select", { weaponType: "knife" });
+      if (e.key === "2") send("weapon_select", { weaponType: "axe" });
+      if (e.key === "3") send("weapon_select", { weaponType: "spear" });
+      if (e.key === "4") send("weapon_select", { weaponType: "bow" });
+    } else if (playerId === 2) {
+      if (e.key === "7") send("weapon_select", { weaponType: "knife" });
+      if (e.key === "8") send("weapon_select", { weaponType: "axe" });
+      if (e.key === "9") send("weapon_select", { weaponType: "spear" });
+      if (e.key === "0") send("weapon_select", { weaponType: "bow" });
+    }
+  }
+
+  // Shop keys
+  if (st === "SHOP") {
+    if (playerId === 1) {
+      if (e.key === "q" || e.key === "Q") {
+        send("shop_action", { action: "upgrade" });
+      }
+      if (e.key === "w" || e.key === "W") {
+        send("shop_action", { action: "send_mobs" });
+      }
+    } else if (playerId === 2) {
+      if (e.key === "i" || e.key === "I") {
+        send("shop_action", { action: "upgrade" });
+      }
+      if (e.key === "o" || e.key === "O") {
+        send("shop_action", { action: "send_mobs" });
+      }
+    }
+    if (e.code === "Space") {
+      send("ready");
+    }
+  }
+
+  // Game over restart
+  if (st === "GAME_OVER") {
+    if (e.key === "r" || e.key === "R" || e.key === "Enter") {
+      send("restart");
+    }
+  }
 });
 
 window.addEventListener("keyup", e => {
+  const st = lastState ? lastState.state : null;
+  if (st !== "PLAYING") return;
+
   if (playerId === 1) {
     if (e.key === "w" || e.key === "W") keyState.up = false;
     if (e.key === "s" || e.key === "S") keyState.down = false;
@@ -157,8 +194,7 @@ window.addEventListener("keyup", e => {
 // Drawing helpers
 // -----------------------------------------------------
 
-function drawTiledBackground() {
-  // ground tiles
+function drawBackground() {
   const ground = assets.ground;
   if (ground) {
     for (let x = 0; x < SCREEN_WIDTH; x += TILE_SIZE) {
@@ -171,7 +207,6 @@ function drawTiledBackground() {
     ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
   }
 
-  // fence strip in the middle
   const fence = assets.fence;
   if (fence) {
     for (let y = 0; y < SCREEN_HEIGHT; y += TILE_SIZE) {
@@ -189,22 +224,11 @@ function drawTiledBackground() {
 
 function drawPlayers(players) {
   for (const p of players) {
-    const img =
-      p.side === "left"
-        ? assets.player1 || null
-        : assets.player2 || null;
-
+    const img = p.side === "left" ? assets.player1 : assets.player2;
+    const size = 40;
     if (img) {
-      const size = 40;
-      ctx.drawImage(
-        img,
-        p.x - size / 2,
-        p.y - size / 2,
-        size,
-        size
-      );
+      ctx.drawImage(img, p.x - size / 2, p.y - size / 2, size, size);
     } else {
-      // fallback circle
       ctx.fillStyle = p.side === "left" ? "#4ab1ff" : "#ff5b5b";
       ctx.beginPath();
       ctx.arc(p.x, p.y, 18, 0, Math.PI * 2);
@@ -222,18 +246,16 @@ function drawPlayers(players) {
 
 function drawMonsters(monsters) {
   for (const m of monsters) {
-    const img =
-      m.type === "slime" ? assets.slime :
-      m.type === "fast" ? assets.fast :
-      m.type === "tank" ? assets.tank :
-      m.type === "spitter" ? assets.spitter :
-      null;
+    let img = null;
+    if (m.type === "slime") img = assets.slime;
+    else if (m.type === "fast") img = assets.fast;
+    else if (m.type === "tank") img = assets.tank;
+    else if (m.type === "spitter") img = assets.spitter;
 
     if (img) {
       const size = 32;
       ctx.drawImage(img, m.x - size / 2, m.y - size / 2, size, size);
     } else {
-      // fallback colored circles
       let color = "#44dd88";
       if (m.type === "fast") color = "#ffd44a";
       else if (m.type === "tank") color = "#7b64d9";
@@ -255,26 +277,24 @@ function drawBullets(bullets) {
   }
 }
 
-function drawHud(state) {
-  if (!state) return;
+function drawHudPlaying(state) {
+  const p1 = state.players.find(p => p.side === "left");
+  const p2 = state.players.find(p => p.side === "right");
 
-  // top text: round + timer
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = "#fff";
   ctx.font = "18px Arial";
   ctx.textAlign = "center";
   ctx.fillText(
-    `Round ${state.round} – ${state.waveLeft.toFixed(0)}s`,
+    `Round ${state.round} – ${Math.max(0, state.waveLeft).toFixed(0)}s`,
     SCREEN_WIDTH / 2,
     24
   );
 
-  // players info at top corners
-  ctx.textAlign = "left";
-  const p1 = state.players.find(p => p.side === "left");
-  const p2 = state.players.find(p => p.side === "right");
+  ctx.font = "14px Arial";
   if (p1) {
+    ctx.textAlign = "left";
     ctx.fillText(
-      `P1 HP:${p1.hp} G:${p1.gold} Score:${p1.score}`,
+      `P1 HP:${p1.hp} G:${p1.gold} ${p1.weaponType} L${p1.weaponLevel}`,
       20,
       20
     );
@@ -282,11 +302,193 @@ function drawHud(state) {
   if (p2) {
     ctx.textAlign = "right";
     ctx.fillText(
-      `P2 HP:${p2.hp} G:${p2.gold} Score:${p2.score}`,
+      `P2 HP:${p2.hp} G:${p2.gold} ${p2.weaponType} L${p2.weaponLevel}`,
       SCREEN_WIDTH - 20,
       20
     );
   }
+}
+
+// -----------------------------------------------------
+// Screens (states)
+// -----------------------------------------------------
+
+function drawWeaponSelect(state) {
+  ctx.fillStyle = "#191933";
+  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "28px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("Choose Weapons", SCREEN_WIDTH / 2, 60);
+
+  ctx.font = "14px Arial";
+  ctx.fillText(
+    "P1: 1=Knife,2=Axe,3=Spear,4=Bow   |   P2: 7=Knife,8=Axe,9=Spear,0=Bow",
+    SCREEN_WIDTH / 2,
+    90
+  );
+
+  const p1 = state.players.find(p => p.side === "left");
+  const p2 = state.players.find(p => p.side === "right");
+
+  function panel(x, label, player, isLeft) {
+    const y0 = 140;
+    ctx.textAlign = "left";
+    ctx.font = "20px Arial";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x, y0);
+
+    ctx.font = "14px Arial";
+    let text = "Selected: [none]";
+    if (player && player.hasChosenWeapon) {
+      text = `Selected: ${player.weaponType}`;
+    }
+    ctx.fillStyle = player && player.hasChosenWeapon ? "#c8e5ff" : "#ff8080";
+    ctx.fillText(text, x, y0 + 30);
+
+    // weapon icon
+    if (player && player.hasChosenWeapon && assets[player.weaponType]) {
+      ctx.drawImage(assets[player.weaponType], x, y0 + 50, 32, 32);
+    }
+
+    // player sprite
+    const img = isLeft ? assets.player1 : assets.player2;
+    if (img) {
+      ctx.drawImage(img, x + 90, y0 + 40, 40, 40);
+    }
+  }
+
+  panel(100, "Player 1 (WASD)", p1, true);
+  panel(SCREEN_WIDTH - 300, "Player 2 (Arrows)", p2, false);
+
+  ctx.font = "14px Arial";
+  ctx.fillStyle = "#ccc";
+  ctx.textAlign = "center";
+  ctx.fillText(
+    "When both have selected, the first wave will start automatically.",
+    SCREEN_WIDTH / 2,
+    SCREEN_HEIGHT - 40
+  );
+}
+
+function drawPlaying(state) {
+  drawBackground();
+  drawPlayers(state.players || []);
+  drawMonsters(state.monsters || []);
+  drawBullets(state.bullets || []);
+  drawHudPlaying(state);
+}
+
+function drawShop(state) {
+  ctx.fillStyle = "#1e2038";
+  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "26px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(`SHOP - Round ${state.round}`, SCREEN_WIDTH / 2, 40);
+
+  ctx.font = "14px Arial";
+  ctx.fillStyle = "#ddd";
+  ctx.fillText(
+    "P1: Q=Upgrade, W=Send mobs   |   P2: I=Upgrade, O=Send mobs   |   SPACE = Ready",
+    SCREEN_WIDTH / 2,
+    70
+  );
+
+  const p1 = state.players.find(p => p.side === "left");
+  const p2 = state.players.find(p => p.side === "right");
+
+  ctx.textAlign = "left";
+  let y = 120;
+  if (p1) {
+    ctx.fillStyle = "#fff";
+    ctx.fillText(
+      `Player 1 (WASD) – HP:${p1.hp}  Gold:${p1.gold}  ${p1.weaponType} L${p1.weaponLevel}`,
+      80,
+      y
+    );
+    ctx.fillText(
+      `Extra mobs queued on P2: ${state.extraQueueRight || 0}`,
+      80,
+      y + 20
+    );
+  }
+
+  y = 200;
+  if (p2) {
+    ctx.fillStyle = "#fff";
+    ctx.fillText(
+      `Player 2 (Arrows) – HP:${p2.hp}  Gold:${p2.gold}  ${p2.weaponType} L${p2.weaponLevel}`,
+      80,
+      y
+    );
+    ctx.fillText(
+      `Extra mobs queued on P1: ${state.extraQueueLeft || 0}`,
+      80,
+      y + 20
+    );
+  }
+
+  ctx.font = "14px Arial";
+  ctx.fillStyle = "#ccc";
+  ctx.textAlign = "center";
+  ctx.fillText(
+    `Shop ends in ${Math.max(0, state.shopLeft).toFixed(0)}s or when both are ready.`,
+    SCREEN_WIDTH / 2,
+    SCREEN_HEIGHT - 60
+  );
+}
+
+function drawGameOver(state) {
+  ctx.fillStyle = "#101020";
+  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "32px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("GAME OVER", SCREEN_WIDTH / 2, 60);
+
+  const p1 = state.players.find(p => p.side === "left");
+  const p2 = state.players.find(p => p.side === "right");
+
+  let winnerText = "Game Over";
+  if (p1 && p2) {
+    if (p1.hp > 0 && p2.hp <= 0) winnerText = "Player 1 (WASD) wins!";
+    else if (p2.hp > 0 && p1.hp <= 0) winnerText = "Player 2 (Arrows) wins!";
+    else if (p1.hp <= 0 && p2.hp <= 0) winnerText = "It's a draw! Both fell.";
+  }
+
+  ctx.font = "18px Arial";
+  ctx.fillStyle = "#ddd";
+  ctx.fillText(winnerText, SCREEN_WIDTH / 2, 100);
+
+  ctx.font = "16px Arial";
+  let y = 160;
+  if (p1) {
+    ctx.fillText(
+      `P1 – Monsters killed: ${p1.monstersKilled}  |  Gold: ${p1.gold}  |  Score: ${p1.score}`,
+      SCREEN_WIDTH / 2,
+      y
+    );
+    y += 30;
+  }
+  if (p2) {
+    ctx.fillText(
+      `P2 – Monsters killed: ${p2.monstersKilled}  |  Gold: ${p2.gold}  |  Score: ${p2.score}`,
+      SCREEN_WIDTH / 2,
+      y
+    );
+  }
+
+  ctx.font = "14px Arial";
+  ctx.fillStyle = "#aaa";
+  ctx.fillText(
+    "Press R or ENTER to restart from Round 1 (new weapon select).",
+    SCREEN_WIDTH / 2,
+    SCREEN_HEIGHT - 60
+  );
 }
 
 // -----------------------------------------------------
@@ -295,7 +497,6 @@ function drawHud(state) {
 
 function draw() {
   if (!assetsLoaded) {
-    // loading screen
     ctx.fillStyle = "#111";
     ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     ctx.fillStyle = "#fff";
@@ -306,20 +507,32 @@ function draw() {
     return;
   }
 
-  // background + fence
-  drawTiledBackground();
+  if (!lastState) {
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    ctx.fillStyle = "#fff";
+    ctx.font = "20px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("Waiting for game state...", SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
+    requestAnimationFrame(draw);
+    return;
+  }
 
-  if (lastState) {
-    drawPlayers(lastState.players || []);
-    drawMonsters(lastState.monsters || []);
-    drawBullets(lastState.bullets || []);
-    drawHud(lastState);
+  const st = lastState.state;
+  if (st === "WEAPON_SELECT") {
+    drawWeaponSelect(lastState);
+  } else if (st === "PLAYING") {
+    drawPlaying(lastState);
+  } else if (st === "SHOP") {
+    drawShop(lastState);
+  } else if (st === "GAME_OVER") {
+    drawGameOver(lastState);
   }
 
   requestAnimationFrame(draw);
 }
 
-// Kick everything off: load assets then start rendering
+// start
 loadAssets(assetPaths).then(() => {
   requestAnimationFrame(draw);
 });
