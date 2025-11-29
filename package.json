@@ -1,0 +1,16 @@
+{
+  "name": "fence-fighters-online",
+  "version": "1.0.0",
+  "description": "Fence Fighters online - browser + WebSocket server",
+  "main": "src/server/http_ws.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server/http_ws.js"
+  },
+  "dependencies": {
+    "ws": "^8.17.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
