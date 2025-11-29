@@ -22,14 +22,14 @@ const MONSTER_TYPES = {
   slime: { hp: 20, speed: 80, gold: [2, 4] },
   tank: { hp: 40, speed: 60, gold: [4, 7] },
   fast: { hp: 15, speed: 120, gold: [1, 3] },
-  spitter: { hp: 18, speed: 70, gold: [3, 5] } // no projectiles yet, but stats kept
+  spitter: { hp: 18, speed: 70, gold: [3, 5] }
 };
 
 const WEAPON_CONFIG = {
   knife: { damage: 10, cooldown: 0.35, bulletSpeed: 520 },
   axe: { damage: 18, cooldown: 0.65, bulletSpeed: 460 },
   spear: { damage: 14, cooldown: 0.45, bulletSpeed: 580 },
-  bow: { damage: 8, cooldown: 0.55, bulletSpeed: 780 } // long range, low dmg
+  bow: { damage: 8, cooldown: 0.55, bulletSpeed: 780 }
 };
 
 const HEART_DROP_CHANCE = 0.05;
@@ -160,7 +160,6 @@ class Bullet {
   }
 }
 
-// Simple pickups (for future visual use if needed)
 class GoldDrop {
   constructor(id, x, y, amount) {
     this.id = id;
@@ -179,6 +178,24 @@ class HealthPickup {
   }
 }
 
+class SpawnWarning {
+  constructor(id, side, type, round) {
+    this.id = id;
+    this.side = side;
+    this.type = type;
+    this.round = round;
+    this.timer = 0.5;
+
+    this.x =
+      side === "left"
+        ? Math.random() * (FENCE_X - ARENA_PADDING) + ARENA_PADDING
+        : Math.random() * (SCREEN_WIDTH - (FENCE_X + ARENA_PADDING)) +
+          (FENCE_X + ARENA_PADDING);
+    this.y =
+      Math.random() * (SCREEN_HEIGHT - 2 * ARENA_PADDING) + ARENA_PADDING;
+  }
+}
+
 // -----------------------------------------------------
 // GameCore – authoritative game state (server-side)
 // -----------------------------------------------------
@@ -186,22 +203,24 @@ class HealthPickup {
 class GameCore {
   constructor() {
     this.players = [new Player(1, "left"), new Player(2, "right")];
+
     this.monsters = [];
     this.bullets = [];
     this.goldDrops = [];
     this.hearts = [];
+    this.spawnWarnings = [];
 
     this.nextMonsterId = 1;
     this.nextBulletId = 1;
     this.nextGoldId = 1;
     this.nextHeartId = 1;
+    this.nextSpawnWarnId = 1;
 
     this.state = "WEAPON_SELECT"; // WEAPON_SELECT / PLAYING / SHOP / GAME_OVER
     this.round = 1;
     this.waveLeft = WAVE_TIME;
     this.shopLeft = SHOP_TIME;
 
-    // spawn control
     this.spawnInterval = 1.8;
     this.baseTarget = 6;
     this.baseSpawnedLeft = 0;
@@ -209,7 +228,6 @@ class GameCore {
     this.spawnCdLeft = 0;
     this.spawnCdRight = 0;
 
-    // extra monsters from shop
     this.extraQueueLeft = 0;
     this.extraQueueRight = 0;
     this.extraActiveLeft = 0;
@@ -222,7 +240,6 @@ class GameCore {
   }
 
   resetMatch() {
-    // reset everything back to weapon select
     const fresh = new GameCore();
     Object.assign(this, fresh);
   }
@@ -232,7 +249,7 @@ class GameCore {
   }
 
   // -------------------------------------------------
-  // Server-driven actions (from websocket messages)
+  // Server-driven actions
   // -------------------------------------------------
 
   handleWeaponChoice(playerId, weaponType) {
@@ -280,10 +297,11 @@ class GameCore {
   }
 
   // -------------------------------------------------
-  // Spawning / utility
+  // Spawning / utilities
   // -------------------------------------------------
 
-  spawnMonsterOnSide(side) {
+  spawnWarningOnSide(side) {
+    // choose type (same weights as Python)
     const r = Math.random();
     let type = "slime";
     if (r < 0.6) type = "slime";
@@ -291,7 +309,20 @@ class GameCore {
     else if (r < 0.95) type = "tank";
     else type = "spitter";
 
-    const m = new Monster(this.nextMonsterId++, side, type, this.round);
+    const w = new SpawnWarning(this.nextSpawnWarnId++, side, type, this.round);
+    this.spawnWarnings.push(w);
+  }
+
+  spawnMonsterFromWarning(warn) {
+    const m = new Monster(
+      this.nextMonsterId++,
+      warn.side,
+      warn.type,
+      warn.round
+    );
+    // keep the warning's position so it feels like it materializes
+    m.x = warn.x;
+    m.y = warn.y;
     this.monsters.push(m);
   }
 
@@ -331,7 +362,6 @@ class GameCore {
     this.leftReady = false;
     this.rightReady = false;
 
-    // activate queued extra mobs for this wave
     this.extraActiveLeft = this.extraQueueLeft;
     this.extraActiveRight = this.extraQueueRight;
     this.extraSpawnedLeft = 0;
@@ -339,22 +369,22 @@ class GameCore {
     this.extraQueueLeft = 0;
     this.extraQueueRight = 0;
 
-    // clear old entities (except players)
     this.monsters = [];
     this.bullets = [];
     this.goldDrops = [];
     this.hearts = [];
+    this.spawnWarnings = [];
   }
 
   startShop() {
     this.state = "SHOP";
     this.shopLeft = SHOP_TIME;
 
-    // clear active entities
     this.monsters = [];
     this.bullets = [];
     this.goldDrops = [];
     this.hearts = [];
+    this.spawnWarnings = [];
   }
 
   startGameOver() {
@@ -363,11 +393,11 @@ class GameCore {
     this.bullets = [];
     this.goldDrops = [];
     this.hearts = [];
+    this.spawnWarnings = [];
   }
 
   // -------------------------------------------------
   // Main step
-  // dt: seconds, inputs: {1:{up,down,left,right}, 2:{...}}
   // -------------------------------------------------
 
   step(dt, inputs) {
@@ -382,13 +412,11 @@ class GameCore {
         this.updateShop(dt);
         break;
       case "GAME_OVER":
-        // nothing to simulate
         break;
     }
   }
 
   updateWeaponSelect(_dt) {
-    // auto-start when both players picked a weapon
     const allChosen = this.players.every(p => p.hasChosenWeapon);
     if (allChosen) {
       this.startWave();
@@ -396,7 +424,7 @@ class GameCore {
   }
 
   updatePlaying(dt, inputs) {
-    // move players
+    // Move players
     for (const p of this.players) {
       const inp = inputs[p.id] || {};
       let dx = 0;
@@ -425,34 +453,46 @@ class GameCore {
       p.weaponTimer = Math.max(0, p.weaponTimer - dt);
     }
 
-    // spawn baseline monsters
+    // Spawn baseline warnings (which become monsters after 0.5s)
     this.spawnCdLeft -= dt;
     this.spawnCdRight -= dt;
     if (this.spawnCdLeft <= 0 && this.baseSpawnedLeft < this.baseTarget) {
-      this.spawnMonsterOnSide("left");
+      this.spawnWarningOnSide("left");
       this.spawnCdLeft = this.spawnInterval;
       this.baseSpawnedLeft += 1;
     }
     if (this.spawnCdRight <= 0 && this.baseSpawnedRight < this.baseTarget) {
-      this.spawnMonsterOnSide("right");
+      this.spawnWarningOnSide("right");
       this.spawnCdRight = this.spawnInterval;
       this.baseSpawnedRight += 1;
     }
 
-    // extra monsters distributed over wave duration
+    // Extra monsters as warnings too
     const elapsedFrac = (WAVE_TIME - this.waveLeft) / WAVE_TIME;
     const targetExtraLeft = Math.floor(this.extraActiveLeft * elapsedFrac);
     while (this.extraSpawnedLeft < targetExtraLeft) {
-      this.spawnMonsterOnSide("left");
+      this.spawnWarningOnSide("left");
       this.extraSpawnedLeft += 1;
     }
     const targetExtraRight = Math.floor(this.extraActiveRight * elapsedFrac);
     while (this.extraSpawnedRight < targetExtraRight) {
-      this.spawnMonsterOnSide("right");
+      this.spawnWarningOnSide("right");
       this.extraSpawnedRight += 1;
     }
 
-    // monsters move toward their player
+    // Update spawn warnings -> turn into monsters
+    const remainingWarnings = [];
+    for (const w of this.spawnWarnings) {
+      w.timer -= dt;
+      if (w.timer <= 0) {
+        this.spawnMonsterFromWarning(w);
+      } else {
+        remainingWarnings.push(w);
+      }
+    }
+    this.spawnWarnings = remainingWarnings;
+
+    // Move monsters toward their player
     for (const m of this.monsters) {
       const p = m.side === "left" ? this.players[0] : this.players[1];
       const dx = p.x - m.x;
@@ -462,7 +502,7 @@ class GameCore {
       m.y += (dy / dist) * m.speed * dt;
     }
 
-    // players auto-fire at nearest monster
+    // Players auto-fire
     for (const p of this.players) {
       const target = this.nearestMonster(p.side, p.x, p.y);
       if (target && p.weaponTimer <= 0) {
@@ -490,7 +530,7 @@ class GameCore {
       }
     }
 
-    // move bullets
+    // Move bullets
     for (const b of this.bullets) {
       b.lifetime -= dt;
       b.x += b.dx * b.speed * dt;
@@ -510,7 +550,7 @@ class GameCore {
     }
     this.bullets = this.bullets.filter(b => b.lifetime > 0);
 
-    // bullet–monster collisions
+    // Bullet–monster collisions
     const hitRadius = 18;
     for (const b of this.bullets) {
       for (const m of this.monsters) {
@@ -524,18 +564,31 @@ class GameCore {
       }
     }
 
-    // monster deaths: award gold/score, count kills, random heart heal
+    // Monster deaths → spawn gold + hearts, award score & kill count
     const survivors = [];
     for (const m of this.monsters) {
       if (m.dead) {
         const p = m.side === "left" ? this.players[0] : this.players[1];
-        const amt = m.goldDrop();
-        p.gold += amt;
-        p.score += amt * 5;
+        const goldAmount = m.goldDrop();
+        p.score += goldAmount * 5;
         p.monstersKilled += 1;
 
+        const gd = new GoldDrop(
+          this.nextGoldId++,
+          m.x,
+          m.y,
+          goldAmount
+        );
+        this.goldDrops.push(gd);
+
         if (Math.random() < HEART_DROP_CHANCE) {
-          p.heal(HEART_HEAL_AMOUNT);
+          const heart = new HealthPickup(
+            this.nextHeartId++,
+            m.x,
+            m.y,
+            HEART_HEAL_AMOUNT
+          );
+          this.hearts.push(heart);
         }
       } else {
         survivors.push(m);
@@ -544,7 +597,7 @@ class GameCore {
     this.monsters = survivors;
     this.bullets = this.bullets.filter(b => b.lifetime > 0);
 
-    // monster contact damage (simple, per tick)
+    // Monster contact damage
     for (const m of this.monsters) {
       const p = m.side === "left" ? this.players[0] : this.players[1];
       const dist = Math.hypot(m.x - p.x, m.y - p.y);
@@ -553,16 +606,45 @@ class GameCore {
       }
     }
 
-    // wave timer / end conditions
+    // Pickups: gold & hearts -> must be walked over
+    const newGold = [];
+    for (const g of this.goldDrops) {
+      let picked = false;
+      for (const p of this.players) {
+        const dist = Math.hypot(g.x - p.x, g.y - p.y);
+        if (dist < 18) {
+          p.gold += g.amount;
+          picked = true;
+          break;
+        }
+      }
+      if (!picked) newGold.push(g);
+    }
+    this.goldDrops = newGold;
+
+    const newHearts = [];
+    for (const h of this.hearts) {
+      let picked = false;
+      for (const p of this.players) {
+        const dist = Math.hypot(h.x - p.x, h.y - p.y);
+        if (dist < 18) {
+          p.heal(h.healAmount);
+          picked = true;
+          break;
+        }
+      }
+      if (!picked) newHearts.push(h);
+    }
+    this.hearts = newHearts;
+
+    // Wave timer / end conditions
     this.waveLeft -= dt;
 
-    // if someone dies → GAME_OVER
     if (!this.players[0].alive || !this.players[1].alive) {
       this.startGameOver();
       return;
     }
 
-    // if time is up and both alive → SHOP
     if (this.waveLeft <= 0) {
       this.round += 1;
       this.startShop();
@@ -577,7 +659,7 @@ class GameCore {
   }
 
   // -------------------------------------------------
-  // State export for clients
+  // Export state
   // -------------------------------------------------
 
   exportState() {
@@ -620,6 +702,26 @@ class GameCore {
         x: b.x,
         y: b.y,
         weaponType: b.weaponType
+      })),
+      goldDrops: this.goldDrops.map(g => ({
+        id: g.id,
+        x: g.x,
+        y: g.y,
+        amount: g.amount
+      })),
+      hearts: this.hearts.map(h => ({
+        id: h.id,
+        x: h.x,
+        y: h.y,
+        healAmount: h.healAmount
+      })),
+      spawnWarnings: this.spawnWarnings.map(w => ({
+        id: w.id,
+        side: w.side,
+        type: w.type,
+        x: w.x,
+        y: w.y,
+        timer: w.timer
       }))
     };
   }

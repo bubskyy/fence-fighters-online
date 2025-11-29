@@ -10,7 +10,7 @@ const FENCE_X = SCREEN_WIDTH / 2;
 const TILE_SIZE = 64;
 
 // -----------------------------------------------------
-// Assets loading (PNG from /assets/...)
+// Assets
 // -----------------------------------------------------
 
 const assetPaths = {
@@ -28,7 +28,10 @@ const assetPaths = {
   knife: "assets/weapons/knife.png",
   axe: "assets/weapons/axe.png",
   spear: "assets/weapons/spear.png",
-  bow: "assets/weapons/bow.png"
+  bow: "assets/weapons/bow.png",
+
+  gold: "assets/pickups/gold.png",
+  heart: "assets/pickups/heart.png"
 };
 
 const assets = {};
@@ -64,7 +67,7 @@ function loadAssets(paths) {
 }
 
 // -----------------------------------------------------
-// WebSocket setup
+// WebSocket
 // -----------------------------------------------------
 
 const protocol = location.protocol === "https:" ? "wss" : "ws";
@@ -74,6 +77,7 @@ const socket = new WebSocket(wsUrl);
 let playerId = null;
 let lastState = null;
 
+// movement input – now ALWAYS WASD, for both players
 const keyState = { up: false, down: false, left: false, right: false };
 
 socket.addEventListener("open", () => {
@@ -84,7 +88,7 @@ socket.addEventListener("message", event => {
   const msg = JSON.parse(event.data);
   if (msg.type === "welcome") {
     playerId = msg.playerId;
-    statusEl.textContent = `Connected as Player ${playerId}`;
+    statusEl.textContent = `Connected as Player ${playerId} (WASD)`;
   } else if (msg.type === "state") {
     lastState = msg.state;
   }
@@ -111,23 +115,16 @@ function sendInput() {
 window.addEventListener("keydown", e => {
   const st = lastState ? lastState.state : null;
 
-  // Movement only in PLAYING
+  // Movement: BOTH players use WASD in their own browser
   if (st === "PLAYING") {
-    if (playerId === 1) {
-      if (e.key === "w" || e.key === "W") keyState.up = true;
-      if (e.key === "s" || e.key === "S") keyState.down = true;
-      if (e.key === "a" || e.key === "A") keyState.left = true;
-      if (e.key === "d" || e.key === "D") keyState.right = true;
-    } else if (playerId === 2) {
-      if (e.key === "ArrowUp") keyState.up = true;
-      if (e.key === "ArrowDown") keyState.down = true;
-      if (e.key === "ArrowLeft") keyState.left = true;
-      if (e.key === "ArrowRight") keyState.right = true;
-    }
+    if (e.key === "w" || e.key === "W") keyState.up = true;
+    if (e.key === "s" || e.key === "S") keyState.down = true;
+    if (e.key === "a" || e.key === "A") keyState.left = true;
+    if (e.key === "d" || e.key === "D") keyState.right = true;
     sendInput();
   }
 
-  // Weapon select keys
+  // Weapon select
   if (st === "WEAPON_SELECT") {
     if (playerId === 1) {
       if (e.key === "1") send("weapon_select", { weaponType: "knife" });
@@ -142,7 +139,7 @@ window.addEventListener("keydown", e => {
     }
   }
 
-  // Shop keys
+  // Shop
   if (st === "SHOP") {
     if (playerId === 1) {
       if (e.key === "q" || e.key === "Q") {
@@ -176,17 +173,10 @@ window.addEventListener("keyup", e => {
   const st = lastState ? lastState.state : null;
   if (st !== "PLAYING") return;
 
-  if (playerId === 1) {
-    if (e.key === "w" || e.key === "W") keyState.up = false;
-    if (e.key === "s" || e.key === "S") keyState.down = false;
-    if (e.key === "a" || e.key === "A") keyState.left = false;
-    if (e.key === "d" || e.key === "D") keyState.right = false;
-  } else if (playerId === 2) {
-    if (e.key === "ArrowUp") keyState.up = false;
-    if (e.key === "ArrowDown") keyState.down = false;
-    if (e.key === "ArrowLeft") keyState.left = false;
-    if (e.key === "ArrowRight") keyState.right = false;
-  }
+  if (e.key === "w" || e.key === "W") keyState.up = false;
+  if (e.key === "s" || e.key === "S") keyState.down = false;
+  if (e.key === "a" || e.key === "A") keyState.left = false;
+  if (e.key === "d" || e.key === "D") keyState.right = false;
   sendInput();
 });
 
@@ -235,7 +225,6 @@ function drawPlayers(players) {
       ctx.fill();
     }
 
-    // HP bar
     const ratio = p.hp / p.maxHp;
     ctx.fillStyle = "#222";
     ctx.fillRect(p.x - 20, p.y - 30, 40, 6);
@@ -268,12 +257,64 @@ function drawMonsters(monsters) {
   }
 }
 
+function drawSpawnWarnings(warnings) {
+  for (const w of warnings) {
+    let img = null;
+    if (w.type === "slime") img = assets.slime;
+    else if (w.type === "fast") img = assets.fast;
+    else if (w.type === "tank") img = assets.tank;
+    else if (w.type === "spitter") img = assets.spitter;
+
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.25 * Math.sin(w.timer * 10); // subtle blink
+
+    if (img) {
+      const size = 32;
+      ctx.drawImage(img, w.x - size / 2, w.y - size / 2, size, size);
+    } else {
+      ctx.fillStyle = "#bbbbbb";
+      ctx.beginPath();
+      ctx.arc(w.x, w.y, 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
 function drawBullets(bullets) {
   ctx.fillStyle = "#ffffff";
   for (const b of bullets) {
     ctx.beginPath();
     ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
     ctx.fill();
+  }
+}
+
+function drawPickups(golds, hearts) {
+  for (const g of golds) {
+    if (assets.gold) {
+      ctx.drawImage(assets.gold, g.x - 10, g.y - 10, 20, 20);
+    } else {
+      ctx.fillStyle = "#ffd700";
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  for (const h of hearts) {
+    if (assets.heart) {
+      ctx.drawImage(assets.heart, h.x - 10, h.y - 10, 20, 20);
+    } else {
+      ctx.fillStyle = "#f04860";
+      ctx.beginPath();
+      ctx.arc(h.x - 4, h.y - 3, 5, 0, Math.PI * 2);
+      ctx.arc(h.x + 4, h.y - 3, 5, 0, Math.PI * 2);
+      ctx.moveTo(h.x - 7, h.y - 1);
+      ctx.lineTo(h.x + 7, h.y - 1);
+      ctx.lineTo(h.x, h.y + 8);
+      ctx.fill();
+    }
   }
 }
 
@@ -310,7 +351,7 @@ function drawHudPlaying(state) {
 }
 
 // -----------------------------------------------------
-// Screens (states)
+// Screens
 // -----------------------------------------------------
 
 function drawWeaponSelect(state) {
@@ -347,12 +388,10 @@ function drawWeaponSelect(state) {
     ctx.fillStyle = player && player.hasChosenWeapon ? "#c8e5ff" : "#ff8080";
     ctx.fillText(text, x, y0 + 30);
 
-    // weapon icon
     if (player && player.hasChosenWeapon && assets[player.weaponType]) {
       ctx.drawImage(assets[player.weaponType], x, y0 + 50, 32, 32);
     }
 
-    // player sprite
     const img = isLeft ? assets.player1 : assets.player2;
     if (img) {
       ctx.drawImage(img, x + 90, y0 + 40, 40, 40);
@@ -360,7 +399,7 @@ function drawWeaponSelect(state) {
   }
 
   panel(100, "Player 1 (WASD)", p1, true);
-  panel(SCREEN_WIDTH - 300, "Player 2 (Arrows)", p2, false);
+  panel(SCREEN_WIDTH - 300, "Player 2 (WASD)", p2, false);
 
   ctx.font = "14px Arial";
   ctx.fillStyle = "#ccc";
@@ -374,9 +413,11 @@ function drawWeaponSelect(state) {
 
 function drawPlaying(state) {
   drawBackground();
-  drawPlayers(state.players || []);
+  drawSpawnWarnings(state.spawnWarnings || []);
   drawMonsters(state.monsters || []);
+  drawPickups(state.goldDrops || [], state.hearts || []);
   drawBullets(state.bullets || []);
+  drawPlayers(state.players || []);
   drawHudPlaying(state);
 }
 
@@ -420,7 +461,7 @@ function drawShop(state) {
   if (p2) {
     ctx.fillStyle = "#fff";
     ctx.fillText(
-      `Player 2 (Arrows) – HP:${p2.hp}  Gold:${p2.gold}  ${p2.weaponType} L${p2.weaponLevel}`,
+      `Player 2 (WASD) – HP:${p2.hp}  Gold:${p2.gold}  ${p2.weaponType} L${p2.weaponLevel}`,
       80,
       y
     );
@@ -456,7 +497,7 @@ function drawGameOver(state) {
   let winnerText = "Game Over";
   if (p1 && p2) {
     if (p1.hp > 0 && p2.hp <= 0) winnerText = "Player 1 (WASD) wins!";
-    else if (p2.hp > 0 && p1.hp <= 0) winnerText = "Player 2 (Arrows) wins!";
+    else if (p2.hp > 0 && p1.hp <= 0) winnerText = "Player 2 (WASD) wins!";
     else if (p1.hp <= 0 && p2.hp <= 0) winnerText = "It's a draw! Both fell.";
   }
 
