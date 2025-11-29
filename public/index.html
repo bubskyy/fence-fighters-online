@@ -1,33 +1,25 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <title>Fence Fighters Online</title>
+    <meta charset="UTF-8" />
+    <title>Fence Fighters (Prototype)</title>
     <style>
       body {
         margin: 0;
         background: #111;
-        color: #eee;
-        font-family: Arial, sans-serif;
         display: flex;
-        flex-direction: column;
         align-items: center;
+        justify-content: center;
+        height: 100vh;
       }
-
-      #status {
-        margin: 16px;
-      }
-
       canvas {
         border: 2px solid #444;
-        background: #000;
+        image-rendering: pixelated;
       }
     </style>
   </head>
   <body>
-    <h1>Fence Fighters Online</h1>
-    <div id="status">Connecting to lobby...</div>
-    <canvas id="gameCanvas" width="1000" height="600"></canvas>
-    <script src="client.js" defer></script>
+    <canvas id="game"></canvas>
+    <script src="main.js"></script>
   </body>
 </html>

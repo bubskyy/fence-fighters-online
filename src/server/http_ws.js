@@ -1,155 +1,117 @@
 // src/server/http_ws.js
-// HTTP + WebSocket server for Fence Fighters Online
-
-const path = require("path");
-const express = require("express");
 const http = require("http");
-const WebSocket = require("ws");
+const fs = require("fs");
+const path = require("path");
 const { GameCore } = require("../game/core");
+const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 3000;
-
-const app = express();
-
-// Serve static files from public/
+const TICK_RATE = 30;
 const publicDir = path.join(__dirname, "..", "..", "public");
-app.use(express.static(publicDir));
 
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-// --- Game state ---
-const game = new GameCore();
-
-// Inputs per player id
-const inputs = {
-  1: { up: false, down: false, left: false, right: false },
-  2: { up: false, down: false, left: false, right: false }
-};
-
-// Map ws -> { playerId }
-const clients = new Map();
-
-// --- Broadcast game state to all connected clients ---
-function broadcastState() {
-  const state = game.exportState();
-  if (!state) return;
-
-  const msg = JSON.stringify({ type: "state", state });
-
-  for (const ws of wss.clients) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(msg);
-    }
-  }
-}
-
-// --- Game loop (tick) ---
-let lastTime = Date.now();
-const TICK_RATE = 120;           // run at 60 ticks per second
-const MAX_DT = 0.05;            // clamp big spikes (e.g. debugger pauses)
-
-setInterval(() => {
-  const now = Date.now();
-  let dt = (now - lastTime) / 1000;
-  lastTime = now;
-
-  if (dt > MAX_DT) {
-    dt = MAX_DT;
+// Static file server (serves public/)
+const server = http.createServer((req, res) => {
+  let filePath = req.url;
+  if (!filePath || filePath === "/") {
+    filePath = "/index.html";
   }
 
-  game.step(dt, inputs);
-  broadcastState();
-}, 1000 / TICK_RATE);
+  const safePath = filePath.replace("..", "");
+  const fullPath = path.join(publicDir, safePath);
 
-
-// --- WebSocket handling ---
-wss.on("connection", ws => {
-  console.log("Client connected");
-
-  // Assign player 1 or 2 if there is a free slot; otherwise spectator
-  const used = new Set(
-    [...clients.values()]
-      .map(info => info.playerId)
-      .filter(id => id != null)
-  );
-
-  let playerId = null;
-  if (!used.has(1)) playerId = 1;
-  else if (!used.has(2)) playerId = 2;
-
-  if (playerId != null) {
-    clients.set(ws, { playerId });
-    inputs[playerId] = { up: false, down: false, left: false, right: false };
-
-    ws.send(JSON.stringify({ type: "welcome", playerId }));
-    console.log(`Assigned as Player ${playerId}`);
-  } else {
-    // extra connections become spectators
-    clients.set(ws, { playerId: null });
-    ws.send(JSON.stringify({ type: "welcome", playerId: null }));
-    console.log("Assigned as spectator");
-  }
-
-  ws.on("message", data => {
-    let msg;
-    try {
-      msg = JSON.parse(data.toString());
-    } catch (e) {
-      console.warn("Bad JSON from client:", e);
+  fs.readFile(fullPath, (err, data) => {
+    if (err) {
+      res.writeHead(404);
+      res.end("Not found");
       return;
     }
 
-    if (!msg.type) return;
+    let contentType = "text/plain";
+    if (filePath.endsWith(".html")) contentType = "text/html";
+    else if (filePath.endsWith(".js")) contentType = "text/javascript";
+    else if (filePath.endsWith(".css")) contentType = "text/css";
+    else if (filePath.endsWith(".png")) contentType = "image/png";
 
-    // Movement input from client.js
-    if (msg.type === "input" && playerId != null) {
-      inputs[playerId] = {
-        up: !!msg.keys?.up,
-        down: !!msg.keys?.down,
-        left: !!msg.keys?.left,
-        right: !!msg.keys?.right
-      };
+    res.writeHead(200, { "Content-Type": contentType });
+    res.end(data);
+  });
+});
+
+// WebSocket server
+const wss = new WebSocket.Server({ server });
+
+let game = new GameCore();
+
+// Map ws -> { playerId, lastInput }
+const clients = new Map();
+
+wss.on("connection", ws => {
+  console.log("Client connected");
+
+  const usedIds = new Set([...clients.values()].map(c => c.playerId));
+  let playerId = 1;
+  if (usedIds.has(1)) playerId = 2;
+
+  clients.set(ws, { playerId, lastInput: {} });
+
+  ws.send(JSON.stringify({ type: "welcome", playerId }));
+
+  ws.on("message", msg => {
+    let data;
+    try {
+      data = JSON.parse(msg.toString());
+    } catch {
+      return;
     }
 
-    // Weapon selection in WEAPON_SELECT phase
-    else if (msg.type === "weapon_select" && playerId != null) {
-      if (msg.weaponType) {
-        game.handleWeaponChoice(playerId, msg.weaponType);
-      }
-    }
+    const client = clients.get(ws);
+    if (!client) return;
 
-    // Shop actions in SHOP phase
-    else if (msg.type === "shop_action" && playerId != null) {
-      if (msg.action) {
-        game.handleShopAction(playerId, msg.action);
-      }
-    }
-
-    // Ready up in SHOP to start next round
-    else if (msg.type === "ready" && playerId != null) {
-      game.handleReady(playerId);
-    }
-
-    // Restart after GAME_OVER
-    else if (msg.type === "restart") {
+    if (data.type === "input") {
+      // movement input
+      client.lastInput = data.keys || {};
+    } else if (data.type === "weapon_select") {
+      // weapon select in WEAPON_SELECT state
+      const weapon = data.weaponType;
+      game.handleWeaponChoice(client.playerId, weapon);
+    } else if (data.type === "shop_action") {
+      // upgrade / send_mobs in SHOP state
+      const action = data.action;
+      game.handleShopAction(client.playerId, action);
+    } else if (data.type === "ready") {
+      // player ready in SHOP
+      game.handleReady(client.playerId);
+    } else if (data.type === "restart") {
+      // restart from GAME_OVER
       game.handleRestart();
     }
   });
 
   ws.on("close", () => {
-    console.log("Client disconnected");
-
     clients.delete(ws);
-
-    if (playerId != null) {
-      // Reset inputs for that slot
-      inputs[playerId] = { up: false, down: false, left: false, right: false };
-    }
+    console.log("Client disconnected");
   });
 });
 
-// Start server
+// Game loop
+setInterval(() => {
+  // collect inputs for each player
+  const inputs = {};
+  for (const [_ws, info] of clients.entries()) {
+    inputs[info.playerId] = info.lastInput || {};
+  }
+
+  game.step(1 / TICK_RATE, inputs);
+  const state = game.exportState();
+
+  const payload = JSON.stringify({ type: "state", state });
+  for (const ws of clients.keys()) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    }
+  }
+}, 1000 / TICK_RATE);
+
 server.listen(PORT, () => {
-  console.log(`Fence Fighters server running on port ${PORT}`);
+  console.log(`Fence Fighters server listening on port ${PORT}`);
 });

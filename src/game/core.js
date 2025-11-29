@@ -9,7 +9,7 @@ const SCREEN_HEIGHT = 600;
 const FENCE_X = SCREEN_WIDTH / 2;
 const ARENA_PADDING = 40;
 
-const PLAYER_SPEED = 240;
+const PLAYER_SPEED = 300;           // bumped a bit for snappier feel
 const PLAYER_MAX_HP = 100;
 const HEART_HEAL = 25;
 const GOLD_PER_PICKUP = 3;
@@ -38,27 +38,27 @@ const UPGRADE_COST = 10;
 const EXTRA_MONSTERS_COST = 12;
 const EXTRA_MONSTERS_AMOUNT = 4;
 
-// weapon config
+// weapon config – same idea as main.js
 const WEAPON_CONFIG = {
   knife: {
-    damage: 8,
-    cooldown: 0.28,
-    bulletSpeed: 720
+    damage: 10,
+    cooldown: 0.35,
+    bulletSpeed: 520
   },
   axe: {
-    damage: 15,
-    cooldown: 0.48,
-    bulletSpeed: 620
+    damage: 18,
+    cooldown: 0.65,
+    bulletSpeed: 460
   },
   spear: {
-    damage: 9,
-    cooldown: 0.16,
-    bulletSpeed: 750
+    damage: 14,
+    cooldown: 0.45,
+    bulletSpeed: 580
   },
   bow: {
-    damage: 12,
-    cooldown: 0.4,
-    bulletSpeed: 900
+    damage: 8,
+    cooldown: 0.55,
+    bulletSpeed: 780
   }
 };
 
@@ -101,7 +101,6 @@ class Player {
     this.weaponType = "knife";
     this.weaponLevel = 1;
     this.weaponTimer = 0;
-    this.hasChosenWeapon = false;
 
     const cfg = WEAPON_CONFIG[this.weaponType];
     this.weaponDamage = cfg.damage;
@@ -129,7 +128,6 @@ class Player {
     this.weaponType = "knife";
     this.weaponLevel = 1;
     this.weaponTimer = 0;
-    this.hasChosenWeapon = false;
 
     const cfg = WEAPON_CONFIG[this.weaponType];
     this.weaponDamage = cfg.damage;
@@ -150,7 +148,6 @@ class Player {
     if (!WEAPON_CONFIG[weaponType]) return;
     this.weaponType = weaponType;
     this.weaponLevel = 1;
-    this.hasChosenWeapon = true;
 
     const cfg = WEAPON_CONFIG[this.weaponType];
     this.weaponDamage = cfg.damage;
@@ -160,6 +157,15 @@ class Player {
 
   upgradeWeapon() {
     this.weaponLevel = Math.min(this.weaponLevel + 1, 5);
+    const cfg = WEAPON_CONFIG[this.weaponType];
+    this.weaponDamage = Math.floor(
+      cfg.damage * (1 + 0.4 * (this.weaponLevel - 1))
+    );
+    this.weaponCooldown = Math.max(
+      0.15,
+      cfg.cooldown * Math.pow(0.9, this.weaponLevel - 1)
+    );
+    this.bulletSpeed = cfg.bulletSpeed * (1 + 0.05 * (this.weaponLevel - 1));
   }
 
   takeDamage(amount) {
@@ -170,13 +176,9 @@ class Player {
     this.hp = clamp(this.hp + amount, 0, this.maxHp);
   }
 
-  updateAim(x, y) {
-    const dx = x - this.x;
-    const dy = y - this.y;
-    const len = Math.hypot(dx, dy);
-    if (len > 0.001) {
-      this.aimDx = dx / len;
-      this.aimDy = dy / len;
+  update(dt) {
+    if (this.weaponTimer > 0) {
+      this.weaponTimer -= dt;
     }
   }
 
@@ -184,25 +186,29 @@ class Player {
     return this.weaponTimer <= 0 && this.isAlive;
   }
 
-  update(dt) {
-    if (this.weaponTimer > 0) {
-      this.weaponTimer -= dt;
+  updateAim(targetX, targetY) {
+    const dx = targetX - this.x;
+    const dy = targetY - this.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0.0001) {
+      this.aimDx = dx / len;
+      this.aimDy = dy / len;
     }
   }
 
   shoot(bulletId) {
-    this.weaponTimer = this.weaponCooldown * Math.max(0.5, 1.0 - 0.08 * (this.weaponLevel - 1));
+    this.weaponTimer = this.weaponCooldown;
 
     const spread = this.weaponType === "bow" ? 0.07 : 0.04;
-    const angleOffset = (Math.random() - 0.5) * spread;
     const baseAngle = Math.atan2(this.aimDy, this.aimDx);
+    const angleOffset = (Math.random() - 0.5) * spread;
     const angle = baseAngle + angleOffset;
 
     const dx = Math.cos(angle);
     const dy = Math.sin(angle);
 
     const speed = this.bulletSpeed;
-    const damage = this.weaponDamage * (1 + 0.25 * (this.weaponLevel - 1));
+    const damage = this.weaponDamage;
 
     const startX = this.x + dx * 20;
     const startY = this.y + dy * 20;
@@ -231,11 +237,6 @@ class Monster {
     this.hp = hp;
     this.speed = speed;
     this.radius = 18;
-
-    this.spitTimer = 0;
-    if (type === "spitter") {
-      this.spitTimer = 1.6 + Math.random() * 1.2;
-    }
   }
 
   get isAlive() {
@@ -258,7 +259,6 @@ class Bullet {
     this.vy = vy;
     this.damage = damage;
     this.weaponType = weaponType;
-
     this.lifetime = BULLET_LIFETIME;
 
     const pierceMap = { knife: 0, axe: 2, spear: 999, bow: 1 };
@@ -351,7 +351,7 @@ class GameCore {
   }
 
   // -------------------------------------------------
-  // Server-driven actions
+  // Server-driven actions (called from http_ws.js)
   // -------------------------------------------------
 
   handleWeaponChoice(playerId, weaponType) {
@@ -368,12 +368,12 @@ class GameCore {
 
     const isLeft = p.side === "left";
 
-    if (action === "upgrade") {
+    if (action === "upgrade_weapon") {
       if (p.gold >= UPGRADE_COST) {
         p.gold -= UPGRADE_COST;
         p.upgradeWeapon();
       }
-    } else if (action === "send_mobs") {
+    } else if (action === "extra_monsters") {
       if (p.gold >= EXTRA_MONSTERS_COST) {
         p.gold -= EXTRA_MONSTERS_COST;
         if (isLeft) {
@@ -384,6 +384,16 @@ class GameCore {
           this.extraActiveRight += 1;
         }
       }
+    } else if (action === "heal") {
+      // optional heal action
+      const healCost = 8;
+      if (p.gold >= healCost) {
+        p.gold -= healCost;
+        p.heal(30);
+      }
+    } else if (action === "start_round") {
+      if (p.side === "left") this.leftReady = true;
+      else this.rightReady = true;
     }
   }
 
@@ -405,13 +415,19 @@ class GameCore {
   // -------------------------------------------------
 
   spawnWarningOnSide(side) {
-    // choose type (same weights as Python)
+    // approximate weights from main.js
+    const types = ["slime", "fast", "tank", "spitter"];
+    const weights = [0.6, 0.2, 0.15, 0.05];
     const r = Math.random();
+    let acc = 0;
     let type = "slime";
-    if (r < 0.6) type = "slime";
-    else if (r < 0.8) type = "fast";
-    else if (r < 0.95) type = "tank";
-    else type = "spitter";
+    for (let i = 0; i < types.length; i++) {
+      acc += weights[i];
+      if (r <= acc) {
+        type = types[i];
+        break;
+      }
+    }
 
     const w = new SpawnWarning(this.nextSpawnWarnId++, side, type, this.round);
     this.spawnWarnings.push(w);
@@ -466,6 +482,28 @@ class GameCore {
     }
   }
 
+  // NEW: nearest-monster logic, ported from main.js
+  nearestMonster(side) {
+    const p = this.players.find(pl => pl.side === side);
+    if (!p) return null;
+
+    let best = null;
+    let bestDist2 = Infinity;
+
+    for (const m of this.monsters) {
+      if (!m.isAlive) continue;
+      if (m.side !== side) continue;
+      const dx = m.x - p.x;
+      const dy = m.y - p.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestDist2) {
+        bestDist2 = d2;
+        best = m;
+      }
+    }
+    return best;
+  }
+
   // -------------------------------------------------
   // Step
   // -------------------------------------------------
@@ -492,8 +530,8 @@ class GameCore {
 
     for (const p of this.players) {
       p.update(dt);
-      if (p.side === "left" && p.hasChosenWeapon) leftChosen = true;
-      if (p.side === "right" && p.hasChosenWeapon) rightChosen = true;
+      if (p.side === "left" && p.weaponType) leftChosen = true;
+      if (p.side === "right" && p.weaponType) rightChosen = true;
     }
 
     if (leftChosen && rightChosen) {
@@ -526,6 +564,7 @@ class GameCore {
   }
 
   updatePlaying(dt, inputs) {
+    // wave timer
     if (this.waveLeft > 0) {
       this.waveLeft -= dt;
       if (this.waveLeft <= 0) {
@@ -537,7 +576,7 @@ class GameCore {
       }
     }
 
-    // update players
+    // players: movement, aiming at nearest monster, shooting
     for (const p of this.players) {
       p.update(dt);
 
@@ -570,15 +609,25 @@ class GameCore {
       p.x = clamp(p.x, minX, maxX);
       p.y = clamp(p.y, minY, maxY);
 
-      p.updateAim(p.side === "left" ? FENCE_X - 20 : FENCE_X + 20, ARENA_PADDING);
+      // 🔥 Aim at nearest monster on this side (main.js behaviour)
+      const target = this.nearestMonster(p.side);
+      if (target) {
+        p.updateAim(target.x, target.y);
+      } else {
+        // fallback aim straight towards fence
+        const fallbackX = p.side === "left" ? FENCE_X - 20 : FENCE_X + 20;
+        const fallbackY = SCREEN_HEIGHT / 2;
+        p.updateAim(fallbackX, fallbackY);
+      }
 
+      // shoot if ready
       if (p.canShoot()) {
         const b = p.shoot(this.nextBulletId++);
         this.bullets.push(b);
       }
     }
 
-    // spawn base monsters
+    // spawn baseline monsters
     if (this.waveLeft > 0) {
       if (this.baseSpawnedLeft < this.baseTarget) {
         this.spawnCdLeft -= dt;
@@ -594,17 +643,25 @@ class GameCore {
           this.spawnCdRight = this.spawnInterval;
         }
       }
-      if (this.extraQueueLeft > 0) {
+
+      // distribute extra monsters over wave duration
+      const elapsedFrac = (WAVE_TIME - this.waveLeft) / WAVE_TIME;
+      const targetExtraLeft = Math.floor(this.extraActiveLeft * elapsedFrac);
+      const targetExtraRight = Math.floor(this.extraActiveRight * elapsedFrac);
+
+      while (this.extraQueueLeft > 0 && this.extraActiveLeft < targetExtraLeft) {
         this.spawnExtraMonsters("left");
-        this.extraQueueLeft -= 1;
+        this.extraQueueLeft--;
+        this.extraActiveLeft++;
       }
-      if (this.extraQueueRight > 0) {
+      while (this.extraQueueRight > 0 && this.extraActiveRight < targetExtraRight) {
         this.spawnExtraMonsters("right");
-        this.extraQueueRight -= 1;
+        this.extraQueueRight--;
+        this.extraActiveRight++;
       }
     }
 
-    // update spawn warnings
+    // update spawn warnings -> monsters
     for (const w of this.spawnWarnings) {
       w.timer -= dt;
     }
@@ -620,7 +677,7 @@ class GameCore {
       this.spawnMonsterFromWarning(w);
     }
 
-    // update monsters
+    // update monsters movement (chase nearest player on same side)
     for (const m of this.monsters) {
       if (!m.isAlive) continue;
 
@@ -640,9 +697,9 @@ class GameCore {
       if (target) {
         const dx = target.x - m.x;
         const dy = target.y - m.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const vx = (dx / len) * m.speed;
-        const vy = (dy / len) * m.speed;
+        const dist = Math.hypot(dx, dy) || 1;
+        const vx = (dx / dist) * m.speed;
+        const vy = (dy / dist) * m.speed;
         m.x += vx * dt;
         m.y += vy * dt;
       }
@@ -816,8 +873,7 @@ class GameCore {
         score: p.score,
         monstersKilled: p.monstersKilled,
         weaponType: p.weaponType,
-        weaponLevel: p.weaponLevel,
-        hasChosenWeapon: p.hasChosenWeapon
+        weaponLevel: p.weaponLevel
       })),
       monsters: this.monsters.map(m => ({
         id: m.id,
