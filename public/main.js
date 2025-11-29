@@ -607,10 +607,10 @@ class Game {
       right: "KeyD",
     };
     this.rightControls = {
-      up: "KeyW",
-      down: "KeyS",
-      left: "KeyA",
-      right: "KeyD",
+      up: "ArrowUp",
+      down: "ArrowDown",
+      left: "ArrowLeft",
+      right: "ArrowRight",
     };
 
     this.pLeft = new Player(
