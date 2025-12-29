@@ -61,6 +61,29 @@ const SEND_MOB_AMOUNT = {
   spitter: 2,
 };
 
+// -----------------------------------------------------
+// Boss fights + boss sending
+// -----------------------------------------------------
+// Every 5th round is a boss round.
+// Boss tiers advance every 10 rounds:
+//   round 1..10  => boss1
+//   round 11..20 => boss2
+//   ...
+const SEND_BOSS_COST = 100;
+
+function bossTierForRound(round) {
+  return 1 + Math.floor((round - 1) / 10);
+}
+
+function bossTypeForRound(round) {
+  const tier = bossTierForRound(round);
+  return `boss${tier}`;
+}
+
+function isBossRound(round) {
+  return round % 5 === 0;
+}
+
 const HEAL_COST = 8;
 const HEAL_AMOUNT = 30;
 
@@ -289,8 +312,8 @@ class Monster {
     this.hp = hp;
     this.speed = speed;
     // Monster size (collision / clamping).
-    // Previously 250% (45). Now -25% from that (≈34) to match client visuals.
-    this.radius = 34;
+    // Keep normal mobs smaller; bosses larger.
+    this.radius = type.startsWith("boss") ? 60 : 34;
   }
 
   get isAlive() {
@@ -407,6 +430,14 @@ class GameCore {
       right: { slime: 0, fast: 0, tank: 0, spitter: 0 },
     };
 
+    // Bosses queued from the shop to be spawned next wave on a given side.
+    // Each entry is a boss type string (e.g. "boss1", "boss2").
+    this.pendingBosses = { left: [], right: [] };
+
+    // Bosses queued from the shop to be spawned next wave on a given side.
+    // Each entry is a boss type string (e.g. "boss1", "boss2").
+    this.pendingBosses = { left: [], right: [] };
+
     this.extraPlanLeft = [];
     this.extraPlanRight = [];
     this.extraPlanSpawnedLeft = 0;
@@ -469,6 +500,14 @@ class GameCore {
 
       const opponentSide = isLeft ? "right" : "left";
       this.queueSendPack(opponentSide, mobType);
+    } else if (action === "send_boss") {
+      if (p.gold < SEND_BOSS_COST) return;
+      p.gold -= SEND_BOSS_COST;
+
+      const opponentSide = isLeft ? "right" : "left";
+      // "Latest" boss: based on current round tier.
+      const bossType = bossTypeForRound(this.round);
+      this.pendingBosses[opponentSide].push(bossType);
     } else if (action === "start_round") {
       if (p.side === "left") this.leftReady = true;
       else this.rightReady = true;
@@ -512,7 +551,8 @@ class GameCore {
       }
     }
 
-    if (forcedType && types.includes(forcedType)) {
+    // forcedType can be a normal mob OR a boss type (boss1, boss2, ...)
+    if (forcedType) {
       type = forcedType;
     }
 
@@ -530,7 +570,13 @@ class GameCore {
 
     let hpMult = 1.0;
     let speedMult = 1.0;
-    if (type === "fast") {
+
+    // Bosses (placeholder balancing)
+    if (type && type.startsWith("boss")) {
+      const tier = Number(String(type).replace("boss", "")) || 1;
+      hpMult = 8.0 + (tier - 1) * 6.0;
+      speedMult = 0.55 + (tier - 1) * 0.05;
+    } else if (type === "fast") {
       hpMult = 0.7;
       speedMult = 1.5;
     } else if (type === "tank") {
@@ -558,7 +604,8 @@ class GameCore {
 
   spawnBaseMonster(side) {
     if (this.monsters.length >= MAX_MONSTERS) return;
-    this.spawnWarningOnSide(side);
+    // For boss rounds we force the base spawns to be the boss type.
+    this.spawnWarningOnSide(side, this._forcedBaseType || null);
     if (side === "left") this.baseSpawnedLeft += 1;
     else this.baseSpawnedRight += 1;
   }
@@ -636,10 +683,18 @@ class GameCore {
     this.hearts = [];
     this.spawnWarnings = [];
 
+    const bossRound = isBossRound(this.round);
+
     // Convert any "send mobs" packs purchased in SHOP into a per-wave spawn plan.
     // This ensures the shop actually affects the NEXT wave (not the current shop screen).
     const buildPlan = (side) => {
       const plan = [];
+
+      // Bosses queued via SHOP (send_boss)
+      const bosses = this.pendingBosses[side] || [];
+      for (const bossType of bosses) plan.push(bossType);
+      this.pendingBosses[side] = [];
+
       const packs = this.pendingPacks[side];
       for (const [mobType, packCount] of Object.entries(packs)) {
         const amountPerPack = SEND_MOB_AMOUNT[mobType] ?? 3;
@@ -659,7 +714,9 @@ class GameCore {
     this.extraSpawnCdLeft = 0.35;
     this.extraSpawnCdRight = 0.35;
 
-    this.baseTarget = Math.round(this.baseTarget * TARGET_SCALE);
+    // Boss rounds: spawn fewer but much tougher units.
+    // Normal rounds keep scaling up target count.
+    this.baseTarget = bossRound ? 1 : Math.round(this.baseTarget * TARGET_SCALE);
     this.baseSpawnedLeft = 0;
     this.baseSpawnedRight = 0;
 
@@ -667,10 +724,17 @@ class GameCore {
     const interval =
       MIN_SPAWN_INTERVAL +
       factor * (BASE_SPAWN_INTERVAL - MIN_SPAWN_INTERVAL);
-    this.spawnInterval = Math.max(MIN_SPAWN_INTERVAL, interval);
+    this.spawnInterval = bossRound ? 1.6 : Math.max(MIN_SPAWN_INTERVAL, interval);
 
-    this.spawnCdLeft = 0.25;
-    this.spawnCdRight = 0.25;
+    this.spawnCdLeft = bossRound ? 0.2 : 0.25;
+    this.spawnCdRight = bossRound ? 0.2 : 0.25;
+
+    // Boss rounds: force base spawns to be the boss type.
+    if (bossRound) {
+      this._forcedBaseType = bossTypeForRound(this.round);
+    } else {
+      this._forcedBaseType = null;
+    }
   }
 
   updatePlaying(dt, inputs) {
@@ -1037,6 +1101,8 @@ class GameCore {
         side: b.side,
         x: b.x,
         y: b.y,
+        vx: b.vx,
+        vy: b.vy,
         weaponType: b.weaponType
       })),
       goldDrops: this.goldDrops.map(g => ({

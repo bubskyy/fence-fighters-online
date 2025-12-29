@@ -131,6 +131,10 @@ const assetPaths = {
   tank: "assets/monsters/tank.png",
   spitter: "assets/monsters/spitter.png",
 
+  // boss placeholders (every 5th round)
+  boss1: "assets/monsters/boss1.png",
+  boss2: "assets/monsters/boss2.png",
+
   // weapon sprites
   knife: "assets/weapons/knife.png",
   axe: "assets/weapons/axe.png",
@@ -232,7 +236,19 @@ const SHOP_ITEMS = [
   { id: "send:fast", label: "Send 3x Fast", cost: 14, hint: "Hard to dodge" },
   { id: "send:tank", label: "Send 2x Tanks", cost: 18, hint: "Soak damage" },
   { id: "send:spitter", label: "Send 2x Spitters", cost: 16, hint: "Ranged threat" },
+  { id: "send_boss", label: "Send Boss", cost: 100, hint: "Big threat (latest tier)" },
 ];
+
+// WEAPON SELECT menu (per connected player)
+const WEAPON_ITEMS = [
+  { id: "knife", label: "Knife", hint: "Fast" },
+  { id: "axe", label: "Axe", hint: "Heavy" },
+  { id: "spear", label: "Spear", hint: "Balanced" },
+  { id: "bow", label: "Bow", hint: "Ranged" },
+];
+
+let weaponIndex = 0;
+let weaponLastNavAt = 0;
 
 let shopIndex = 0;
 let shopLastNavAt = 0;
@@ -327,22 +343,7 @@ window.addEventListener("keydown", (e) => {
 
   // Weapon selection keys
   if (st === "WEAPON_SELECT") {
-    // P1: 1/2/3/4
-    // P2: 7/8/9/0
-    const map = {
-      "1": "knife",
-      "2": "axe",
-      "3": "spear",
-      "4": "bow",
-      "7": "knife",
-      "8": "axe",
-      "9": "spear",
-      "0": "bow",
-    };
-    const weapon = map[e.key];
-    if (weapon) {
-      send({ type: "weapon_select", weaponType: weapon });
-    }
+    handleWeaponSelectKeydown(e);
   }
 
   // Shop navigation + purchases + ready
@@ -375,6 +376,38 @@ window.addEventListener("keyup", (e) => {
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
+}
+
+function handleWeaponSelectKeydown(e) {
+  // Weapon select: WASD navigate, Enter select.
+  // (Per-tab: each client controls its server-assigned player.)
+  const now = performance.now();
+  const canNav = now - weaponLastNavAt > 80; // debounce
+
+  if ((e.key === "w" || e.key === "W") && canNav) {
+    weaponIndex = clamp(weaponIndex - 1, 0, WEAPON_ITEMS.length - 1);
+    weaponLastNavAt = now;
+    e.preventDefault();
+  }
+  if ((e.key === "s" || e.key === "S") && canNav) {
+    weaponIndex = clamp(weaponIndex + 1, 0, WEAPON_ITEMS.length - 1);
+    weaponLastNavAt = now;
+    e.preventDefault();
+  }
+
+  if (e.key === "Enter") {
+    const item = WEAPON_ITEMS[weaponIndex];
+    if (item) send({ type: "weapon_select", weaponType: item.id });
+    e.preventDefault();
+  }
+
+  // (Optional) Legacy number shortcuts still work for now.
+  const legacy = { "1": "knife", "2": "axe", "3": "spear", "4": "bow", "7": "knife", "8": "axe", "9": "spear", "0": "bow" };
+  const weapon = legacy[e.key];
+  if (weapon) {
+    send({ type: "weapon_select", weaponType: weapon });
+    e.preventDefault();
+  }
 }
 
 function handleShopKeydown(e) {
@@ -557,18 +590,23 @@ function drawMonsters(monsters) {
     else if (m.type === "fast") img = assets.fast;
     else if (m.type === "tank") img = assets.tank;
     else if (m.type === "spitter") img = assets.spitter;
+    else if (m.type === "boss1") img = assets.boss1;
+    else if (m.type === "boss2") img = assets.boss2;
+
+    const isBoss = typeof m.type === "string" && m.type.startsWith("boss");
 
     if (img && img.complete && img.naturalWidth) {
-      const size = 32 * MONSTER_SCALE;
+      const size = (isBoss ? 60 : 32) * MONSTER_SCALE;
       ctx.drawImage(img, m.x - size / 2, m.y - size / 2, size, size);
     } else {
       let color = "#44dd88";
       if (m.type === "fast") color = "#ffd44a";
       else if (m.type === "tank") color = "#7b64d9";
       else if (m.type === "spitter") color = "#4ad0ff";
+      else if (isBoss) color = "#ff3b3b";
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(m.x, m.y, 14 * MONSTER_SCALE, 0, Math.PI * 2);
+      ctx.arc(m.x, m.y, (isBoss ? 26 : 14) * MONSTER_SCALE, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -609,6 +647,11 @@ function drawBullets(bullets) {
   for (const b of bullets) {
     const img = projectileImageForWeapon(b.weaponType);
 
+    // Make thrown weapons spin (client-side visual only)
+    const baseAngle = Math.atan2(b.vy || 0, b.vx || 1);
+    const spin = (performance.now() / 1000) * 14.0; // rad/s
+    const angle = baseAngle + spin;
+
     if (img && img.complete && img.naturalWidth) {
       const target = projectileDrawSizeForWeapon(b.weaponType);
       const nw = img.naturalWidth;
@@ -617,7 +660,11 @@ function drawBullets(bullets) {
       const scale = target / denom;
       const w = nw * scale;
       const h = nh * scale;
-      ctx.drawImage(img, b.x - w / 2, b.y - h / 2, w, h);
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(angle);
+      ctx.drawImage(img, -w / 2, -h / 2, w, h);
+      ctx.restore();
     } else {
       ctx.fillStyle = "#fff";
       ctx.beginPath();
@@ -814,6 +861,64 @@ function drawShopUI(state) {
   ctx.restore();
 }
 
+function drawWeaponSelectUI(state) {
+  const me = state.players.find((p) => p.id === playerId);
+  if (!me) return;
+
+  const isLeft = me.side === "left";
+  const panelX = isLeft ? 0 : WORLD_WIDTH / 2;
+  const panelW = WORLD_WIDTH / 2;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(panelX, 0, panelW, WORLD_HEIGHT);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "24px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("CHOOSE WEAPON", panelX + panelW / 2, 42);
+
+  // Show whether the other player has chosen yet (info only)
+  const p1 = state.players.find((p) => p.side === "left");
+  const p2 = state.players.find((p) => p.side === "right");
+  const chosenL = p1 && p1.weaponType ? p1.weaponType.toUpperCase() : "...";
+  const chosenR = p2 && p2.weaponType ? p2.weaponType.toUpperCase() : "...";
+
+  ctx.font = "14px Arial";
+  ctx.fillText(`P1: ${chosenL}   |   P2: ${chosenR}`, panelX + panelW / 2, 66);
+
+  // Items list
+  const startY = 130;
+  const rowH = 44;
+  ctx.textAlign = "left";
+
+  for (let i = 0; i < WEAPON_ITEMS.length; i++) {
+    const item = WEAPON_ITEMS[i];
+    const y = startY + i * rowH;
+    const selected = i === weaponIndex;
+    const isChosen = me.weaponType === item.id;
+
+    if (selected) {
+      ctx.fillStyle = "rgba(255,255,255,0.12)";
+      ctx.fillRect(panelX + 14, y - 26, panelW - 28, 34);
+    }
+
+    ctx.fillStyle = isChosen ? "#7CFF8E" : "#fff";
+    ctx.font = selected ? "bold 18px Arial" : "18px Arial";
+    ctx.fillText(item.label, panelX + 26, y);
+
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.font = "14px Arial";
+    ctx.fillText(item.hint, panelX + 26, y + 18);
+  }
+
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.font = "14px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("W/S = select   Enter = choose", panelX + panelW / 2, WORLD_HEIGHT - 30);
+  ctx.restore();
+}
+
 // -----------------------------------------------------
 // Main render loop
 // -----------------------------------------------------
@@ -846,19 +951,7 @@ function render() {
 
   // State overlays
   if (lastState.state === "WEAPON_SELECT") {
-    const p1 = (lastState.players || []).find((p) => p.side === "left");
-    const p2 = (lastState.players || []).find((p) => p.side === "right");
-    const s1 = p1 && p1.weaponType ? p1.weaponType.toUpperCase() : "...";
-    const s2 = p2 && p2.weaponType ? p2.weaponType.toUpperCase() : "...";
-    drawOverlayText([
-      "WEAPON SELECT",
-      `P1 selected: ${s1}`,
-      `P2 selected: ${s2}`,
-      "",
-      "This round starts when BOTH players have selected a weapon.",
-      "P1: 1 Knife  2 Axe  3 Spear  4 Bow",
-      "P2: 7 Knife  8 Axe  9 Spear  0 Bow",
-    ]);
+    drawWeaponSelectUI(lastState);
   } else if (lastState.state === "SHOP") {
     // Custom UI (navigation with WASD + Enter)
     drawShopUI(lastState);
