@@ -130,6 +130,7 @@ const assetPaths = {
   fast: "assets/monsters/fast.png",
   tank: "assets/monsters/tank.png",
   spitter: "assets/monsters/spitter.png",
+  spitter_projectile: "assets/monsters/spitter_projectile.png",
 
   // boss placeholders (every 5th round)
   boss1: "assets/monsters/boss1.png",
@@ -674,6 +675,34 @@ function drawBullets(bullets) {
   }
 }
 
+
+function drawEnemyBullets(enemyBullets) {
+  for (const b of enemyBullets || []) {
+    // Only spitter blobs for now
+    const img = assets.spitter_projectile;
+
+    if (img && img.complete && img.naturalWidth) {
+      const target = 22 * WEAPON_SCALE;
+      const nw = img.naturalWidth;
+      const nh = img.naturalHeight;
+      const denom = Math.max(1, Math.max(nw, nh));
+      const scale = target / denom;
+      const w = nw * scale;
+      const h = nh * scale;
+      ctx.drawImage(img, b.x - w / 2, b.y - h / 2, w, h);
+    } else {
+      ctx.save();
+      ctx.fillStyle = "#7dff6a";
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 6 * WEAPON_SCALE, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+
+
 function drawPickups(golds, hearts, greenPotions) {
   // ----------------
   // Gold coins
@@ -753,22 +782,39 @@ function drawHud(state) {
   const p1 = state.players.find((p) => p.side === "left");
   const p2 = state.players.find((p) => p.side === "right");
 
-  ctx.save();
-  ctx.fillStyle = "#eee";
-  ctx.font = "16px Arial";
-  ctx.textAlign = "left";
-
-  if (p1) {
-    ctx.fillText(`P1 HP: ${Math.max(0, Math.floor(p1.hp))}`, 12, 22);
-    const w1 = p1.weaponType ? p1.weaponType.toUpperCase() : "...";
-    ctx.fillText(`Gold: ${p1.gold}  Weapon: ${w1} Lv${p1.weaponLevel}`, 12, 44);
+  // Make HUD more readable (especially P2 gold) by drawing small panels + outlined text.
+  function textOutlined(t, x, y, align = "left", size = 16) {
+    ctx.font = `${size}px Arial`;
+    ctx.textAlign = align;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.strokeText(t, x, y);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(t, x, y);
   }
 
-  ctx.textAlign = "right";
+  ctx.save();
+
+  // Left panel (P1)
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(8, 8, 360, 48);
+
+  // Right panel (P2)
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(WORLD_WIDTH - 368, 8, 360, 48);
+
+  if (p1) {
+    textOutlined(`P1 HP: ${Math.max(0, Math.floor(p1.hp))}`, 18, 28, "left", 16);
+    const w1 = p1.weaponType ? p1.weaponType.toUpperCase() : "...";
+    textOutlined(`Gold: ${p1.gold}  Weapon: ${w1} Lv${p1.weaponLevel}`, 18, 48, "left", 14);
+  }
+
   if (p2) {
-    ctx.fillText(`P2 HP: ${Math.max(0, Math.floor(p2.hp))}`, WORLD_WIDTH - 12, 22);
+    // Keep it left-aligned inside the right panel so it doesn't hug the edge.
+    const baseX = WORLD_WIDTH - 358;
+    textOutlined(`P2 HP: ${Math.max(0, Math.floor(p2.hp))}`, baseX, 28, "left", 16);
     const w2 = p2.weaponType ? p2.weaponType.toUpperCase() : "...";
-    ctx.fillText(`Gold: ${p2.gold}  Weapon: ${w2} Lv${p2.weaponLevel}`, WORLD_WIDTH - 12, 44);
+    textOutlined(`Gold: ${p2.gold}  Weapon: ${w2} Lv${p2.weaponLevel}`, baseX, 48, "left", 14);
   }
 
   ctx.textAlign = "center";
@@ -945,6 +991,7 @@ function render() {
   drawSpawnWarnings(lastState.spawnWarnings || []);
   drawMonsters(lastState.monsters || []);
   drawBullets(lastState.bullets || []);
+  drawEnemyBullets(lastState.enemyBullets || []);
   drawPickups(lastState.goldDrops || [], lastState.hearts || [], lastState.greenPotions || []);
   drawPlayers(lastState.players || []);
   drawHud(lastState);

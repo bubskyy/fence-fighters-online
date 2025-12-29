@@ -37,7 +37,7 @@ const SPAWN_INTERVAL_DECAY = 0.045;
 
 const MAX_MONSTERS = 70;
 
-const MONSTER_BASE_HP = 75;
+const MONSTER_BASE_HP = 30;
 const MONSTER_HP_SCALE = 1.12;
 const MONSTER_BASE_SPEED = 90;
 const MONSTER_SPEED_SCALE = 1.06;
@@ -87,31 +87,60 @@ function isBossRound(round) {
 const HEAL_COST = 8;
 const HEAL_AMOUNT = 30;
 
-// weapon config – same idea as main.js
+// weapon config
+// Balance goal: similar baseline DPS across weapons, with different "feel".
+// - Knife: fast throws, lower damage
+// - Axe: slower throws, higher damage + more cleave
+// - Spear: long-range feel via very high pierce
+// - Bow: projectile speed + slight spread
+//
+// Baseline DPS target ~30-33.
 const WEAPON_CONFIG = {
   knife: {
     damage: 10,
-    cooldown: 0.35,
-    bulletSpeed: 520
+    cooldown: 0.25,
+    bulletSpeed: 560,
   },
   axe: {
-    damage: 18,
-    cooldown: 0.65,
-    bulletSpeed: 460
+    damage: 20,
+    cooldown: 0.62,
+    bulletSpeed: 500,
   },
   spear: {
     damage: 14,
-    cooldown: 0.45,
-    bulletSpeed: 580
+    cooldown: 0.42,
+    bulletSpeed: 620,
   },
   bow: {
-    damage: 8,
-    cooldown: 0.55,
-    bulletSpeed: 780
-  }
+    damage: 9,
+    cooldown: 0.30,
+    bulletSpeed: 820,
+  },
 };
 
 const BULLET_LIFETIME = 1.7;
+
+// Pickups felt "too precise"; make pickup radius more forgiving.
+const PICKUP_RADIUS = 28;
+
+// Cleave / splash on hit (in addition to pierce).
+// Values are intentionally modest; axe gets the most.
+const CLEAVE = {
+  knife: { radius: 28, factor: 0.35 },
+  axe: { radius: 62, factor: 0.55 },
+  spear: { radius: 22, factor: 0.25 },
+  bow: { radius: 0, factor: 0.0 },
+};
+
+
+// Enemy projectiles (spitter)
+// Spitters keep distance and fire blobs at players on their side.
+const SPITTER_RANGE = 420;
+const SPITTER_COOLDOWN = 1.25;
+const SPITTER_COOLDOWN_JITTER = 0.35;
+const SPITTER_PROJECTILE_SPEED = 420;
+const SPITTER_PROJECTILE_DAMAGE = 10;
+const ENEMY_BULLET_LIFETIME = 2.2;
 
 // -----------------------------------------------------
 // Helpers
@@ -218,14 +247,16 @@ class Player {
   upgradeWeapon() {
     this.weaponLevel = Math.min(this.weaponLevel + 1, 5);
     const cfg = WEAPON_CONFIG[this.weaponType];
-    this.weaponDamage = Math.floor(
-      cfg.damage * (1 + 0.4 * (this.weaponLevel - 1))
-    );
-    this.weaponCooldown = Math.max(
-      0.15,
-      cfg.cooldown * Math.pow(0.9, this.weaponLevel - 1)
-    );
-    this.bulletSpeed = cfg.bulletSpeed * (1 + 0.05 * (this.weaponLevel - 1));
+    // Upgrades were too strong; keep them meaningful but not game-breaking.
+    // Level 1 -> 5 ends up around ~1.8x DPS instead of ~3x.
+    const lvl = this.weaponLevel;
+    const dmgMult = 1 + 0.15 * (lvl - 1);           // 1.00 .. 1.60
+    const cdMult = Math.pow(0.97, lvl - 1);         // 1.00 .. ~0.885
+    const speedMult = 1 + 0.02 * (lvl - 1);         // 1.00 .. 1.08
+
+    this.weaponDamage = Math.round(cfg.damage * dmgMult);
+    this.weaponCooldown = Math.max(0.18, cfg.cooldown * cdMult);
+    this.bulletSpeed = cfg.bulletSpeed * speedMult;
   }
 
   takeDamage(amount) {
@@ -314,6 +345,9 @@ class Monster {
     // Monster size (collision / clamping).
     // Keep normal mobs smaller; bosses larger.
     this.radius = type.startsWith("boss") ? 60 : 34;
+
+    // Ranged attack timer (used by spitters)
+    this.shotTimer = (type === "spitter") ? (0.4 + Math.random() * 0.6) : 0;
   }
 
   get isAlive() {
@@ -338,8 +372,25 @@ class Bullet {
     this.weaponType = weaponType;
     this.lifetime = BULLET_LIFETIME;
 
-    const pierceMap = { knife: 0, axe: 2, spear: 999, bow: 1 };
+    // Pierce is a simple way to express "cleave".
+    // Spear still has extreme pierce; axe gets modest pierce + splash (see CLEAVE).
+    const pierceMap = { knife: 0, axe: 1, spear: 999, bow: 1 };
     this.pierce = pierceMap[weaponType] ?? 0;
+  }
+}
+
+
+class EnemyBullet {
+  constructor(id, side, x, y, vx, vy, damage) {
+    this.id = id;
+    this.side = side; // "left"/"right" half this projectile belongs to
+    this.x = x;
+    this.y = y;
+    this.vx = vx;
+    this.vy = vy;
+    this.damage = damage;
+    this.lifetime = ENEMY_BULLET_LIFETIME;
+    this.kind = "spitter";
   }
 }
 
@@ -397,6 +448,7 @@ class GameCore {
 
     this.monsters = [];
     this.bullets = [];
+    this.enemyBullets = [];
     this.goldDrops = [];
     this.hearts = [];
     this.greenPotions = [];
@@ -404,6 +456,7 @@ class GameCore {
 
     this.nextMonsterId = 1;
     this.nextBulletId = 1;
+    this.nextEnemyBulletId = 1;
     this.nextGoldId = 1;
     this.nextHeartId = 1;
     this.nextGreenPotionId = 1;
@@ -429,10 +482,6 @@ class GameCore {
       left: { slime: 0, fast: 0, tank: 0, spitter: 0 },
       right: { slime: 0, fast: 0, tank: 0, spitter: 0 },
     };
-
-    // Bosses queued from the shop to be spawned next wave on a given side.
-    // Each entry is a boss type string (e.g. "boss1", "boss2").
-    this.pendingBosses = { left: [], right: [] };
 
     // Bosses queued from the shop to be spawned next wave on a given side.
     // Each entry is a boss type string (e.g. "boss1", "boss2").
@@ -679,6 +728,7 @@ class GameCore {
 
     this.monsters = [];
     this.bullets = [];
+    this.enemyBullets = [];
     this.goldDrops = [];
     this.hearts = [];
     this.spawnWarnings = [];
@@ -901,6 +951,88 @@ class GameCore {
       m.y = clamp(m.y, minY, maxY);
     }
 
+
+// spitters: fire projectiles at the nearest player on their side
+for (const m of this.monsters) {
+  if (!m.isAlive) continue;
+  if (m.type !== "spitter") continue;
+
+  const targets = this.players.filter(p => p.side === m.side && p.isAlive);
+  if (targets.length === 0) continue;
+
+  // choose nearest target
+  let target = targets[0];
+  let bestDist = Infinity;
+  for (const p of targets) {
+    const d = Math.hypot(p.x - m.x, p.y - m.y);
+    if (d < bestDist) {
+      bestDist = d;
+      target = p;
+    }
+  }
+
+  m.shotTimer -= dt;
+
+  // Only shoot if within range
+  if (bestDist <= SPITTER_RANGE && m.shotTimer <= 0) {
+    const dx = target.x - m.x;
+    const dy = target.y - m.y;
+    const dist = Math.hypot(dx, dy) || 1;
+
+    const vx = (dx / dist) * SPITTER_PROJECTILE_SPEED;
+    const vy = (dy / dist) * SPITTER_PROJECTILE_SPEED;
+
+    const startX = m.x + (dx / dist) * (m.radius + 6);
+    const startY = m.y + (dy / dist) * (m.radius + 6);
+
+    this.enemyBullets.push(
+      new EnemyBullet(
+        this.nextEnemyBulletId++,
+        m.side,
+        startX,
+        startY,
+        vx,
+        vy,
+        SPITTER_PROJECTILE_DAMAGE
+      )
+    );
+
+    m.shotTimer = SPITTER_COOLDOWN + Math.random() * SPITTER_COOLDOWN_JITTER;
+  }
+}
+
+// update enemy bullets (spitter blobs)
+for (const eb of this.enemyBullets) {
+  eb.x += eb.vx * dt;
+  eb.y += eb.vy * dt;
+  eb.lifetime -= dt;
+}
+
+// enemy bullet collisions ↔ players
+for (const eb of this.enemyBullets) {
+  if (eb._dead) continue;
+  for (const p of this.players) {
+    if (!p.isAlive) continue;
+    if (p.side !== eb.side) continue; // never cross-halves
+    const dist = Math.hypot(p.x - eb.x, p.y - eb.y);
+    if (dist <= 18) {
+      p.takeDamage(eb.damage);
+      eb._dead = true;
+      break;
+    }
+  }
+}
+
+this.enemyBullets = this.enemyBullets.filter(
+  eb =>
+    !eb._dead &&
+    eb.lifetime > 0 &&
+    eb.x >= -50 &&
+    eb.x <= SCREEN_WIDTH + 50 &&
+    eb.y >= -50 &&
+    eb.y <= SCREEN_HEIGHT + 50
+);
+
     // update bullets
     for (const b of this.bullets) {
       b.x += b.vx * dt;
@@ -926,7 +1058,24 @@ class GameCore {
         if (m.side !== b.side) continue;
         const dist = Math.hypot(m.x - b.x, m.y - b.y);
         if (dist <= m.radius + 5) {
+          // Direct hit
           m.takeDamage(b.damage);
+
+          // "Cleave" (small AoE splash) to make impacts feel better.
+          const cleave = CLEAVE[b.weaponType] || { radius: 0, factor: 0 };
+          if (cleave.radius > 0 && cleave.factor > 0) {
+            const splashDmg = b.damage * cleave.factor;
+            for (const other of this.monsters) {
+              if (!other.isAlive) continue;
+              if (other === m) continue;
+              if (other.side !== b.side) continue;
+              const d2 = Math.hypot(other.x - m.x, other.y - m.y);
+              if (d2 <= cleave.radius) {
+                other.takeDamage(splashDmg);
+              }
+            }
+          }
+
           hits += 1;
           if (!m.isAlive) {
             const owner = this.getPlayer(b.ownerId);
@@ -997,14 +1146,14 @@ class GameCore {
       if (!p.isAlive) continue;
       for (const g of this.goldDrops) {
         const dist = Math.hypot(p.x - g.x, p.y - g.y);
-        if (dist <= 16) {
+        if (dist <= PICKUP_RADIUS) {
           p.gold += g.amount;
           g._taken = true;
         }
       }
       for (const h of this.hearts) {
         const dist = Math.hypot(p.x - h.x, p.y - h.y);
-        if (dist <= 16) {
+        if (dist <= PICKUP_RADIUS) {
           p.heal(h.healAmount);
           h._taken = true;
         }
@@ -1012,7 +1161,7 @@ class GameCore {
 
       for (const gp of this.greenPotions) {
         const dist = Math.hypot(p.x - gp.x, p.y - gp.y);
-        if (dist <= 16) {
+        if (dist <= PICKUP_RADIUS) {
           p.applyEnrage(ENRAGE_DURATION);
           gp._taken = true;
         }
@@ -1095,6 +1244,15 @@ class GameCore {
         x: m.x,
         y: m.y,
         hp: m.hp
+      })),
+      enemyBullets: this.enemyBullets.map(eb => ({
+        id: eb.id,
+        side: eb.side,
+        x: eb.x,
+        y: eb.y,
+        vx: eb.vx,
+        vy: eb.vy,
+        kind: eb.kind
       })),
       bullets: this.bullets.map(b => ({
         id: b.id,
