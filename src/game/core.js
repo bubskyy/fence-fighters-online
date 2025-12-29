@@ -4,6 +4,7 @@
 // Config
 // -----------------------------------------------------
 
+// NOTE: This is the "world" size. The client can scale it to fit any screen.
 const SCREEN_WIDTH = 1000;
 const SCREEN_HEIGHT = 600;
 const FENCE_X = SCREEN_WIDTH / 2;
@@ -98,14 +99,16 @@ class Player {
     this.score = 0;
     this.monstersKilled = 0;
 
-    this.weaponType = "knife";
+    // Weapon is chosen in WEAPON_SELECT. Until then, don't auto-shoot.
+    this.weaponType = null;
+    this.hasChosenWeapon = false;
     this.weaponLevel = 1;
     this.weaponTimer = 0;
 
-    const cfg = WEAPON_CONFIG[this.weaponType];
-    this.weaponDamage = cfg.damage;
-    this.weaponCooldown = cfg.cooldown;
-    this.bulletSpeed = cfg.bulletSpeed;
+    // Default stats (overridden once weapon is selected)
+    this.weaponDamage = 0;
+    this.weaponCooldown = 999;
+    this.bulletSpeed = 0;
 
     this.aimDx = side === "left" ? 1 : -1;
     this.aimDy = 0;
@@ -125,14 +128,14 @@ class Player {
     this.gold = 0;
     this.score = 0;
     this.monstersKilled = 0;
-    this.weaponType = "knife";
+    this.weaponType = null;
+    this.hasChosenWeapon = false;
     this.weaponLevel = 1;
     this.weaponTimer = 0;
 
-    const cfg = WEAPON_CONFIG[this.weaponType];
-    this.weaponDamage = cfg.damage;
-    this.weaponCooldown = cfg.cooldown;
-    this.bulletSpeed = cfg.bulletSpeed;
+    this.weaponDamage = 0;
+    this.weaponCooldown = 999;
+    this.bulletSpeed = 0;
 
     this.aimDx = this.side === "left" ? 1 : -1;
     this.aimDy = 0;
@@ -147,6 +150,7 @@ class Player {
   setWeapon(weaponType) {
     if (!WEAPON_CONFIG[weaponType]) return;
     this.weaponType = weaponType;
+    this.hasChosenWeapon = true;
     this.weaponLevel = 1;
 
     const cfg = WEAPON_CONFIG[this.weaponType];
@@ -183,7 +187,7 @@ class Player {
   }
 
   canShoot() {
-    return this.weaponTimer <= 0 && this.isAlive;
+    return this.weaponTimer <= 0 && this.isAlive && this.hasChosenWeapon;
   }
 
   updateAim(targetX, targetY) {
@@ -210,8 +214,11 @@ class Player {
     const speed = this.bulletSpeed;
     const damage = this.weaponDamage;
 
-    const startX = this.x + dx * 20;
-    const startY = this.y + dy * 20;
+    // Spawn bullets from the "weapon tip" so it visually looks like it's fired from hand.
+    const weaponTip = { knife: 22, axe: 28, spear: 34, bow: 28 };
+    const tip = weaponTip[this.weaponType] ?? 22;
+    const startX = this.x + dx * tip;
+    const startY = this.y + dy * tip;
 
     return new Bullet(
       bulletId,
@@ -290,7 +297,9 @@ class SpawnWarning {
     this.side = side;
     this.type = type;
     this.round = round;
-    this.timer = 0.5 + Math.random() * 0.7;
+    // Fixed warning duration so the client can do a predictable 3-blink animation.
+    this.duration = 2.0;
+    this.timer = this.duration;
 
     const xMin = side === "left" ? ARENA_PADDING : FENCE_X + ARENA_PADDING;
     const xMax =
@@ -368,12 +377,13 @@ class GameCore {
 
     const isLeft = p.side === "left";
 
-    if (action === "upgrade_weapon") {
+    // Accept both old client action names and new canonical ones.
+    if (action === "upgrade" || action === "upgrade_weapon") {
       if (p.gold >= UPGRADE_COST) {
         p.gold -= UPGRADE_COST;
         p.upgradeWeapon();
       }
-    } else if (action === "extra_monsters") {
+    } else if (action === "send_mobs" || action === "extra_monsters") {
       if (p.gold >= EXTRA_MONSTERS_COST) {
         p.gold -= EXTRA_MONSTERS_COST;
         if (isLeft) {
@@ -525,18 +535,14 @@ class GameCore {
   }
 
   updateWeaponSelect(dt) {
-    let leftChosen = false;
-    let rightChosen = false;
+    for (const p of this.players) p.update(dt);
 
-    for (const p of this.players) {
-      p.update(dt);
-      if (p.side === "left" && p.weaponType) leftChosen = true;
-      if (p.side === "right" && p.weaponType) rightChosen = true;
-    }
+    const left = this.players.find(p => p.side === "left");
+    const right = this.players.find(p => p.side === "right");
+    const leftChosen = !!left?.hasChosenWeapon;
+    const rightChosen = !!right?.hasChosenWeapon;
 
-    if (leftChosen && rightChosen) {
-      this.startNewRound();
-    }
+    if (leftChosen && rightChosen) this.startNewRound();
   }
 
   startNewRound() {
@@ -609,19 +615,14 @@ class GameCore {
       p.x = clamp(p.x, minX, maxX);
       p.y = clamp(p.y, minY, maxY);
 
-      // 🔥 Aim at nearest monster on this side (main.js behaviour)
+      // Aim at nearest monster on this side
       const target = this.nearestMonster(p.side);
       if (target) {
         p.updateAim(target.x, target.y);
-      } else {
-        // fallback aim straight towards fence
-        const fallbackX = p.side === "left" ? FENCE_X - 20 : FENCE_X + 20;
-        const fallbackY = SCREEN_HEIGHT / 2;
-        p.updateAim(fallbackX, fallbackY);
       }
 
-      // shoot if ready
-      if (p.canShoot()) {
+      // Only shoot when there's something to shoot at (no "ghost" bullets)
+      if (target && p.canShoot()) {
         const b = p.shoot(this.nextBulletId++);
         this.bullets.push(b);
       }
@@ -873,7 +874,8 @@ class GameCore {
         score: p.score,
         monstersKilled: p.monstersKilled,
         weaponType: p.weaponType,
-        weaponLevel: p.weaponLevel
+        weaponLevel: p.weaponLevel,
+        hasChosenWeapon: p.hasChosenWeapon
       })),
       monsters: this.monsters.map(m => ({
         id: m.id,
@@ -908,7 +910,8 @@ class GameCore {
         type: w.type,
         x: w.x,
         y: w.y,
-        timer: w.timer
+        timer: w.timer,
+        duration: w.duration
       }))
     };
   }

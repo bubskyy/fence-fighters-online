@@ -42,7 +42,7 @@ const wss = new WebSocket.Server({ server });
 
 let game = new GameCore();
 
-// Map ws -> { playerId, lastInput }
+// Map ws -> { playerId, lastInput, lastInputAt }
 const clients = new Map();
 
 wss.on("connection", ws => {
@@ -52,7 +52,7 @@ wss.on("connection", ws => {
   let playerId = 0; // 0 = spectator
   if (!usedIds.has(1)) playerId = 1;
   else if (!usedIds.has(2)) playerId = 2;
-clients.set(ws, { playerId, lastInput: {} });
+  clients.set(ws, { playerId, lastInput: {}, lastInputAt: Date.now() });
 
   ws.send(JSON.stringify({ type: "welcome", playerId }));
 
@@ -72,6 +72,7 @@ clients.set(ws, { playerId, lastInput: {} });
     if (data.type === "input") {
       // movement input
       client.lastInput = data.keys || {};
+      client.lastInputAt = Date.now();
     } else if (data.type === "weapon_select") {
       // weapon select in WEAPON_SELECT state
       const weapon = data.weaponType;
@@ -99,9 +100,13 @@ clients.set(ws, { playerId, lastInput: {} });
 setInterval(() => {
   // collect inputs for each player
   const inputs = {};
+  const now = Date.now();
   for (const [_ws, info] of clients.entries()) {
     if (info.playerId === 1 || info.playerId === 2) {
-      inputs[info.playerId] = info.lastInput || {};
+      // If a client gets "stuck" (tab loses focus and never sends keyup),
+      // treat old input as empty after a short timeout.
+      const ageMs = now - (info.lastInputAt || 0);
+      inputs[info.playerId] = ageMs > 250 ? {} : info.lastInput || {};
     }
   }
 
