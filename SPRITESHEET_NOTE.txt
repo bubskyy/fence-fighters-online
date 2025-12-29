@@ -1,0 +1,13 @@
+Add your walking sprite sheet image here:
+
+  ff_fix/public/assets/characters/baldricfrontwalksheet.png
+
+Expected layout:
+  - 6 columns x 4 rows
+  - total size 576 x 256
+  - frame size 96 x 64
+
+Rows are assumed to be:
+  0 = down, 1 = left, 2 = right, 3 = up
+
+If you only have left-walk frames, open public/client.js and set flipX=true in drawPlayers().

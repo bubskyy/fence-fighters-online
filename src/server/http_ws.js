@@ -6,7 +6,8 @@ const { GameCore } = require("../game/core");
 const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 3000;
-const TICK_RATE = 30;
+// Higher tick-rate reduces "hitchy" movement and makes the game feel snappier.
+const TICK_RATE = 60;
 const publicDir = path.join(__dirname, "..", "..", "public");
 
 // Static file server (serves public/)
@@ -38,12 +39,22 @@ const server = http.createServer((req, res) => {
 });
 
 // WebSocket server
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ server, path: "/ws" });
 
 let game = new GameCore();
 
-// Map ws -> { playerId, lastInput, lastInputAt }
+// Map ws -> { playerId, lastInput }
 const clients = new Map();
+
+function emptyInput() {
+  return { up: false, down: false, left: false, right: false };
+}
+
+function clearAllInputs() {
+  for (const info of clients.values()) {
+    info.lastInput = emptyInput();
+  }
+}
 
 wss.on("connection", ws => {
   console.log("Client connected");
@@ -52,7 +63,8 @@ wss.on("connection", ws => {
   let playerId = 0; // 0 = spectator
   if (!usedIds.has(1)) playerId = 1;
   else if (!usedIds.has(2)) playerId = 2;
-  clients.set(ws, { playerId, lastInput: {}, lastInputAt: Date.now() });
+
+  clients.set(ws, { playerId, lastInput: emptyInput() });
 
   ws.send(JSON.stringify({ type: "welcome", playerId }));
 
@@ -71,8 +83,7 @@ wss.on("connection", ws => {
 
     if (data.type === "input") {
       // movement input
-      client.lastInput = data.keys || {};
-      client.lastInputAt = Date.now();
+      client.lastInput = { ...emptyInput(), ...(data.keys || {}) };
     } else if (data.type === "weapon_select") {
       // weapon select in WEAPON_SELECT state
       const weapon = data.weaponType;
@@ -87,11 +98,30 @@ wss.on("connection", ws => {
     } else if (data.type === "restart") {
       // restart from GAME_OVER
       game.handleRestart();
+      clearAllInputs();
     }
   });
 
   ws.on("close", () => {
+    const info = clients.get(ws);
     clients.delete(ws);
+
+    // If a player disconnects, make sure we don't keep stale inputs / selections around.
+    if (info && (info.playerId === 1 || info.playerId === 2)) {
+      const p = game.getPlayer ? game.getPlayer(info.playerId) : null;
+      if (p) {
+        // During weapon select, disconnect should clear their selection so the game can't start early.
+        if (game.state === "WEAPON_SELECT") {
+          p.weaponType = null;
+          p.weaponChosen = false;
+        }
+
+        // During an active round, treat disconnect as a loss.
+        if (game.state === "PLAYING") {
+          p.hp = 0;
+        }
+      }
+    }
     console.log("Client disconnected");
   });
 });
@@ -100,17 +130,16 @@ wss.on("connection", ws => {
 setInterval(() => {
   // collect inputs for each player
   const inputs = {};
-  const now = Date.now();
   for (const [_ws, info] of clients.entries()) {
     if (info.playerId === 1 || info.playerId === 2) {
-      // If a client gets "stuck" (tab loses focus and never sends keyup),
-      // treat old input as empty after a short timeout.
-      const ageMs = now - (info.lastInputAt || 0);
-      inputs[info.playerId] = ageMs > 250 ? {} : info.lastInput || {};
+      inputs[info.playerId] = info.lastInput || emptyInput();
     }
   }
 
-  game.step(1 / TICK_RATE, inputs);
+  // Prevent "stuck keys" from affecting non-playing states.
+  // (KeyUp events can be missed on tab switches, restarts, etc.)
+  const effectiveInputs = game.state === "PLAYING" ? inputs : {};
+  game.step(1 / TICK_RATE, effectiveInputs);
   const state = game.exportState();
 
   const payload = JSON.stringify({ type: "state", state });

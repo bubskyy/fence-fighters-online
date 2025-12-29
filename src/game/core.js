@@ -4,7 +4,8 @@
 // Config
 // -----------------------------------------------------
 
-// NOTE: This is the "world" size. The client can scale it to fit any screen.
+// NOTE: The server simulates in a fixed "world" size.
+// The browser client scales this world to fit your screen.
 const SCREEN_WIDTH = 1000;
 const SCREEN_HEIGHT = 600;
 const FENCE_X = SCREEN_WIDTH / 2;
@@ -15,17 +16,26 @@ const PLAYER_MAX_HP = 100;
 const HEART_HEAL = 25;
 const GOLD_PER_PICKUP = 3;
 
+// Green potion (enrage) pickup
+// When collected: +15% damage, +75% attack speed for a short duration.
+const GREEN_POTION_DROP_CHANCE = 0.06;
+const ENRAGE_DURATION = 12.0;
+const ENRAGE_DAMAGE_MULT = 1.15;
+const ENRAGE_ATTACK_SPEED_MULT = 1.75;
+
 const WAVE_TIME = 30.0;
 const SHOP_TIME = 18.0;
 
-const BASE_TARGET = 6;
-const TARGET_SCALE = 1.2;
+// Make wave 1 feel challenging already.
+// (User request: harder + roughly 2x more monsters.)
+const BASE_TARGET = 18;
+const TARGET_SCALE = 1.32;
 
-const BASE_SPAWN_INTERVAL = 1.8;
-const MIN_SPAWN_INTERVAL = 0.45;
-const SPAWN_INTERVAL_DECAY = 0.035;
+const BASE_SPAWN_INTERVAL = 0.95;
+const MIN_SPAWN_INTERVAL = 0.25;
+const SPAWN_INTERVAL_DECAY = 0.045;
 
-const MAX_MONSTERS = 26;
+const MAX_MONSTERS = 70;
 
 const MONSTER_BASE_HP = 30;
 const MONSTER_HP_SCALE = 1.12;
@@ -36,8 +46,23 @@ const GOLD_DROP_CHANCE = 0.55;
 const HEART_DROP_CHANCE = 0.08;
 
 const UPGRADE_COST = 10;
-const EXTRA_MONSTERS_COST = 12;
-const EXTRA_MONSTERS_AMOUNT = 4;
+
+// Shop "send mobs" now supports specific mob types (different costs).
+const SEND_MOB_COST = {
+  slime: 10,
+  fast: 14,
+  tank: 18,
+  spitter: 16,
+};
+const SEND_MOB_AMOUNT = {
+  slime: 4,
+  fast: 3,
+  tank: 2,
+  spitter: 2,
+};
+
+const HEAL_COST = 8;
+const HEAL_AMOUNT = 30;
 
 // weapon config – same idea as main.js
 const WEAPON_CONFIG = {
@@ -99,16 +124,20 @@ class Player {
     this.score = 0;
     this.monstersKilled = 0;
 
-    // Weapon is chosen in WEAPON_SELECT. Until then, don't auto-shoot.
+    // Weapon is chosen in WEAPON_SELECT.
+    // Keep null until chosen so the game doesn't auto-start.
     this.weaponType = null;
-    this.hasChosenWeapon = false;
+    this.weaponChosen = false;
     this.weaponLevel = 1;
     this.weaponTimer = 0;
 
-    // Default stats (overridden once weapon is selected)
-    this.weaponDamage = 0;
-    this.weaponCooldown = 999;
-    this.bulletSpeed = 0;
+    // Temporary buffs
+    this.enrageTimer = 0;
+
+    // Default stats (will be overwritten on setWeapon).
+    this.weaponDamage = 10;
+    this.weaponCooldown = 0.35;
+    this.bulletSpeed = 520;
 
     this.aimDx = side === "left" ? 1 : -1;
     this.aimDy = 0;
@@ -129,13 +158,17 @@ class Player {
     this.score = 0;
     this.monstersKilled = 0;
     this.weaponType = null;
-    this.hasChosenWeapon = false;
+    this.weaponChosen = false;
     this.weaponLevel = 1;
     this.weaponTimer = 0;
 
-    this.weaponDamage = 0;
-    this.weaponCooldown = 999;
-    this.bulletSpeed = 0;
+    // Temporary buffs
+    this.enrageTimer = 0;
+
+    // Default stats (will be overwritten on setWeapon).
+    this.weaponDamage = 10;
+    this.weaponCooldown = 0.35;
+    this.bulletSpeed = 520;
 
     this.aimDx = this.side === "left" ? 1 : -1;
     this.aimDy = 0;
@@ -150,7 +183,7 @@ class Player {
   setWeapon(weaponType) {
     if (!WEAPON_CONFIG[weaponType]) return;
     this.weaponType = weaponType;
-    this.hasChosenWeapon = true;
+    this.weaponChosen = true;
     this.weaponLevel = 1;
 
     const cfg = WEAPON_CONFIG[this.weaponType];
@@ -184,10 +217,22 @@ class Player {
     if (this.weaponTimer > 0) {
       this.weaponTimer -= dt;
     }
+
+    if (this.enrageTimer > 0) {
+      this.enrageTimer = Math.max(0, this.enrageTimer - dt);
+    }
+  }
+
+  get isEnraged() {
+    return this.enrageTimer > 0;
+  }
+
+  applyEnrage(durationSeconds) {
+    this.enrageTimer = Math.max(this.enrageTimer, durationSeconds);
   }
 
   canShoot() {
-    return this.weaponTimer <= 0 && this.isAlive && this.hasChosenWeapon;
+    return this.weaponTimer <= 0 && this.isAlive;
   }
 
   updateAim(targetX, targetY) {
@@ -201,7 +246,9 @@ class Player {
   }
 
   shoot(bulletId) {
-    this.weaponTimer = this.weaponCooldown;
+    // Attack speed buff reduces cooldown.
+    const atkSpeedMult = this.isEnraged ? ENRAGE_ATTACK_SPEED_MULT : 1.0;
+    this.weaponTimer = this.weaponCooldown / atkSpeedMult;
 
     const spread = this.weaponType === "bow" ? 0.07 : 0.04;
     const baseAngle = Math.atan2(this.aimDy, this.aimDx);
@@ -212,13 +259,11 @@ class Player {
     const dy = Math.sin(angle);
 
     const speed = this.bulletSpeed;
-    const damage = this.weaponDamage;
+    const dmgMult = this.isEnraged ? ENRAGE_DAMAGE_MULT : 1.0;
+    const damage = this.weaponDamage * dmgMult;
 
-    // Spawn bullets from the "weapon tip" so it visually looks like it's fired from hand.
-    const weaponTip = { knife: 22, axe: 28, spear: 34, bow: 28 };
-    const tip = weaponTip[this.weaponType] ?? 22;
-    const startX = this.x + dx * tip;
-    const startY = this.y + dy * tip;
+    const startX = this.x + dx * 20;
+    const startY = this.y + dy * 20;
 
     return new Bullet(
       bulletId,
@@ -243,7 +288,9 @@ class Monster {
     this.y = y;
     this.hp = hp;
     this.speed = speed;
-    this.radius = 18;
+    // Monster size (collision / clamping).
+    // Previously 250% (45). Now -25% from that (≈34) to match client visuals.
+    this.radius = 34;
   }
 
   get isAlive() {
@@ -291,15 +338,23 @@ class HeartPickup {
   }
 }
 
+class GreenPotionPickup {
+  constructor(id, x, y) {
+    this.id = id;
+    this.x = x;
+    this.y = y;
+  }
+}
+
 class SpawnWarning {
   constructor(id, side, type, round) {
     this.id = id;
     this.side = side;
     this.type = type;
     this.round = round;
-    // Fixed warning duration so the client can do a predictable 3-blink animation.
-    this.duration = 2.0;
-    this.timer = this.duration;
+    // Telegraph spawning: blink ~3 times over ~2 seconds.
+    this.total = 2.0;
+    this.timer = this.total;
 
     const xMin = side === "left" ? ARENA_PADDING : FENCE_X + ARENA_PADDING;
     const xMax =
@@ -321,15 +376,18 @@ class GameCore {
     this.bullets = [];
     this.goldDrops = [];
     this.hearts = [];
+    this.greenPotions = [];
     this.spawnWarnings = [];
 
     this.nextMonsterId = 1;
     this.nextBulletId = 1;
     this.nextGoldId = 1;
     this.nextHeartId = 1;
+    this.nextGreenPotionId = 1;
     this.nextSpawnWarnId = 1;
 
     this.state = "WEAPON_SELECT"; // WEAPON_SELECT / PLAYING / SHOP / GAME_OVER
+    this.winner = null; // "left" | "right" | "draw" | null
     this.round = 1;
     this.waveLeft = WAVE_TIME;
     this.shopLeft = SHOP_TIME;
@@ -341,10 +399,20 @@ class GameCore {
     this.spawnCdLeft = 0;
     this.spawnCdRight = 0;
 
-    this.extraQueueLeft = 0;
-    this.extraQueueRight = 0;
-    this.extraActiveLeft = 0;
-    this.extraActiveRight = 0;
+    // "Send mobs" purchases made during SHOP (applied next wave).
+    // We store packs per side + type during the shop, then convert them into a
+    // per-wave spawn plan when the next wave starts.
+    this.pendingPacks = {
+      left: { slime: 0, fast: 0, tank: 0, spitter: 0 },
+      right: { slime: 0, fast: 0, tank: 0, spitter: 0 },
+    };
+
+    this.extraPlanLeft = [];
+    this.extraPlanRight = [];
+    this.extraPlanSpawnedLeft = 0;
+    this.extraPlanSpawnedRight = 0;
+    this.extraSpawnCdLeft = 0;
+    this.extraSpawnCdRight = 0;
 
     this.leftReady = false;
     this.rightReady = false;
@@ -377,34 +445,39 @@ class GameCore {
 
     const isLeft = p.side === "left";
 
-    // Accept both old client action names and new canonical ones.
-    if (action === "upgrade" || action === "upgrade_weapon") {
+    // Backwards-compatible aliases (older client)
+    if (action === "upgrade") action = "upgrade_weapon";
+    if (action === "send_mobs") action = "send:slime";
+
+    if (action === "upgrade_weapon") {
       if (p.gold >= UPGRADE_COST) {
         p.gold -= UPGRADE_COST;
         p.upgradeWeapon();
       }
-    } else if (action === "send_mobs" || action === "extra_monsters") {
-      if (p.gold >= EXTRA_MONSTERS_COST) {
-        p.gold -= EXTRA_MONSTERS_COST;
-        if (isLeft) {
-          this.extraQueueRight += 1;
-          this.extraActiveLeft += 1;
-        } else {
-          this.extraQueueLeft += 1;
-          this.extraActiveRight += 1;
-        }
-      }
     } else if (action === "heal") {
-      // optional heal action
-      const healCost = 8;
-      if (p.gold >= healCost) {
-        p.gold -= healCost;
-        p.heal(30);
+      if (p.gold >= HEAL_COST) {
+        p.gold -= HEAL_COST;
+        p.heal(HEAL_AMOUNT);
       }
+    } else if (action && action.startsWith("send:")) {
+      // send:<mobType> => queues a pack to the opponent side
+      const mobType = action.split(":")[1];
+      const cost = SEND_MOB_COST[mobType];
+      if (!cost) return;
+      if (p.gold < cost) return;
+      p.gold -= cost;
+
+      const opponentSide = isLeft ? "right" : "left";
+      this.queueSendPack(opponentSide, mobType);
     } else if (action === "start_round") {
       if (p.side === "left") this.leftReady = true;
       else this.rightReady = true;
     }
+  }
+
+  queueSendPack(side, mobType) {
+    if (!this.pendingPacks[side] || !(mobType in this.pendingPacks[side])) return;
+    this.pendingPacks[side][mobType] += 1;
   }
 
   handleReady(playerId) {
@@ -424,7 +497,7 @@ class GameCore {
   // Spawning / utilities
   // -------------------------------------------------
 
-  spawnWarningOnSide(side) {
+  spawnWarningOnSide(side, forcedType = null) {
     // approximate weights from main.js
     const types = ["slime", "fast", "tank", "spitter"];
     const weights = [0.6, 0.2, 0.15, 0.05];
@@ -437,6 +510,10 @@ class GameCore {
         type = types[i];
         break;
       }
+    }
+
+    if (forcedType && types.includes(forcedType)) {
+      type = forcedType;
     }
 
     const w = new SpawnWarning(this.nextSpawnWarnId++, side, type, this.round);
@@ -487,9 +564,8 @@ class GameCore {
   }
 
   spawnExtraMonsters(side) {
-    for (let i = 0; i < EXTRA_MONSTERS_AMOUNT; i++) {
-      this.spawnWarningOnSide(side);
-    }
+    // Deprecated (kept to avoid breaking older clients). Default to slimes.
+    this.queueSendPack(side, "slime");
   }
 
   // NEW: nearest-monster logic, ported from main.js
@@ -535,18 +611,23 @@ class GameCore {
   }
 
   updateWeaponSelect(dt) {
-    for (const p of this.players) p.update(dt);
+    let leftChosen = false;
+    let rightChosen = false;
 
-    const left = this.players.find(p => p.side === "left");
-    const right = this.players.find(p => p.side === "right");
-    const leftChosen = !!left?.hasChosenWeapon;
-    const rightChosen = !!right?.hasChosenWeapon;
+    for (const p of this.players) {
+      p.update(dt);
+      if (p.side === "left" && p.weaponChosen) leftChosen = true;
+      if (p.side === "right" && p.weaponChosen) rightChosen = true;
+    }
 
-    if (leftChosen && rightChosen) this.startNewRound();
+    if (leftChosen && rightChosen) {
+      this.startNewRound();
+    }
   }
 
   startNewRound() {
     this.state = "PLAYING";
+    this.winner = null;
     this.waveLeft = WAVE_TIME;
 
     this.monsters = [];
@@ -554,6 +635,29 @@ class GameCore {
     this.goldDrops = [];
     this.hearts = [];
     this.spawnWarnings = [];
+
+    // Convert any "send mobs" packs purchased in SHOP into a per-wave spawn plan.
+    // This ensures the shop actually affects the NEXT wave (not the current shop screen).
+    const buildPlan = (side) => {
+      const plan = [];
+      const packs = this.pendingPacks[side];
+      for (const [mobType, packCount] of Object.entries(packs)) {
+        const amountPerPack = SEND_MOB_AMOUNT[mobType] ?? 3;
+        for (let p = 0; p < packCount; p++) {
+          for (let i = 0; i < amountPerPack; i++) plan.push(mobType);
+        }
+      }
+      // Clear pending packs for that side (they've been consumed into the plan)
+      this.pendingPacks[side] = { slime: 0, fast: 0, tank: 0, spitter: 0 };
+      return plan;
+    };
+
+    this.extraPlanLeft = buildPlan("left");
+    this.extraPlanRight = buildPlan("right");
+    this.extraPlanSpawnedLeft = 0;
+    this.extraPlanSpawnedRight = 0;
+    this.extraSpawnCdLeft = 0.35;
+    this.extraSpawnCdRight = 0.35;
 
     this.baseTarget = Math.round(this.baseTarget * TARGET_SCALE);
     this.baseSpawnedLeft = 0;
@@ -565,8 +669,8 @@ class GameCore {
       factor * (BASE_SPAWN_INTERVAL - MIN_SPAWN_INTERVAL);
     this.spawnInterval = Math.max(MIN_SPAWN_INTERVAL, interval);
 
-    this.spawnCdLeft = 0.5;
-    this.spawnCdRight = 0.5;
+    this.spawnCdLeft = 0.25;
+    this.spawnCdRight = 0.25;
   }
 
   updatePlaying(dt, inputs) {
@@ -615,16 +719,23 @@ class GameCore {
       p.x = clamp(p.x, minX, maxX);
       p.y = clamp(p.y, minY, maxY);
 
-      // Aim at nearest monster on this side
+      // 🔥 Aim at nearest monster on this side (main.js behaviour)
       const target = this.nearestMonster(p.side);
+
+      // Aim at nearest monster on this side. If none exist, do NOT shoot.
       if (target) {
         p.updateAim(target.x, target.y);
-      }
 
-      // Only shoot when there's something to shoot at (no "ghost" bullets)
-      if (target && p.canShoot()) {
-        const b = p.shoot(this.nextBulletId++);
-        this.bullets.push(b);
+        // shoot only when we actually have something to shoot at
+        if (p.canShoot()) {
+          const b = p.shoot(this.nextBulletId++);
+          this.bullets.push(b);
+        }
+      } else {
+        // Keep a sensible aim direction for visuals (but no firing).
+        const fallbackX = p.side === "left" ? FENCE_X - 20 : FENCE_X + 20;
+        const fallbackY = p.y;
+        p.updateAim(fallbackX, fallbackY);
       }
     }
 
@@ -645,21 +756,28 @@ class GameCore {
         }
       }
 
-      // distribute extra monsters over wave duration
-      const elapsedFrac = (WAVE_TIME - this.waveLeft) / WAVE_TIME;
-      const targetExtraLeft = Math.floor(this.extraActiveLeft * elapsedFrac);
-      const targetExtraRight = Math.floor(this.extraActiveRight * elapsedFrac);
+      // Spawn extra mobs purchased in the shop (spread out across the wave).
+      const spawnExtraForSide = (side) => {
+        if (this.monsters.length >= MAX_MONSTERS) return;
+        const plan = side === "left" ? this.extraPlanLeft : this.extraPlanRight;
+        const spawnedKey = side === "left" ? "extraPlanSpawnedLeft" : "extraPlanSpawnedRight";
+        const cdKey = side === "left" ? "extraSpawnCdLeft" : "extraSpawnCdRight";
 
-      while (this.extraQueueLeft > 0 && this.extraActiveLeft < targetExtraLeft) {
-        this.spawnExtraMonsters("left");
-        this.extraQueueLeft--;
-        this.extraActiveLeft++;
-      }
-      while (this.extraQueueRight > 0 && this.extraActiveRight < targetExtraRight) {
-        this.spawnExtraMonsters("right");
-        this.extraQueueRight--;
-        this.extraActiveRight++;
-      }
+        if (this[spawnedKey] >= plan.length) return;
+
+        this[cdKey] -= dt;
+        if (this[cdKey] > 0) return;
+
+        const mobType = plan[this[spawnedKey]];
+        this.spawnWarningOnSide(side, mobType);
+        this[spawnedKey] += 1;
+
+        // A slightly faster cadence than base spawns so "sent" packs feel impactful.
+        this[cdKey] = Math.max(0.25, this.spawnInterval * 0.6);
+      };
+
+      spawnExtraForSide("left");
+      spawnExtraForSide("right");
     }
 
     // update spawn warnings -> monsters
@@ -769,6 +887,15 @@ class GameCore {
                 );
                 this.hearts.push(heart);
               }
+
+              if (Math.random() < GREEN_POTION_DROP_CHANCE) {
+                const potion = new GreenPotionPickup(
+                  this.nextGreenPotionId++,
+                  m.x,
+                  m.y
+                );
+                this.greenPotions.push(potion);
+              }
             }
           }
         }
@@ -792,7 +919,8 @@ class GameCore {
         if (p.side !== m.side) continue;
         const dist = Math.hypot(p.x - m.x, p.y - m.y);
         if (dist <= m.radius + 18) {
-          p.takeDamage(8);
+          // Make contact hits hurt more now that there are more mobs.
+          p.takeDamage(12);
           m.takeDamage(9999);
         }
       }
@@ -817,16 +945,28 @@ class GameCore {
           h._taken = true;
         }
       }
+
+      for (const gp of this.greenPotions) {
+        const dist = Math.hypot(p.x - gp.x, p.y - gp.y);
+        if (dist <= 16) {
+          p.applyEnrage(ENRAGE_DURATION);
+          gp._taken = true;
+        }
+      }
     }
 
     this.goldDrops = this.goldDrops.filter(g => !g._taken);
     this.hearts = this.hearts.filter(h => !h._taken);
+    this.greenPotions = this.greenPotions.filter(gp => !gp._taken);
 
     // game over?
     const aliveLeft = this.players.find(p => p.side === "left" && p.isAlive);
     const aliveRight = this.players.find(p => p.side === "right" && p.isAlive);
-    if (!aliveLeft && !aliveRight) {
+    if (!aliveLeft || !aliveRight) {
       this.state = "GAME_OVER";
+      if (aliveLeft && !aliveRight) this.winner = "left";
+      else if (aliveRight && !aliveLeft) this.winner = "right";
+      else this.winner = "draw";
     }
   }
 
@@ -854,13 +994,15 @@ class GameCore {
   exportState() {
     return {
       state: this.state,
+      winner: this.winner,
       round: this.round,
       waveLeft: this.waveLeft,
       shopLeft: this.shopLeft,
-      extraQueueLeft: this.extraQueueLeft,
-      extraQueueRight: this.extraQueueRight,
-      extraActiveLeft: this.extraActiveLeft,
-      extraActiveRight: this.extraActiveRight,
+      pendingPacks: this.pendingPacks,
+      extraPlanRemaining: {
+        left: Math.max(0, this.extraPlanLeft.length - this.extraPlanSpawnedLeft),
+        right: Math.max(0, this.extraPlanRight.length - this.extraPlanSpawnedRight),
+      },
       leftReady: this.leftReady,
       rightReady: this.rightReady,
       players: this.players.map(p => ({
@@ -868,6 +1010,8 @@ class GameCore {
         side: p.side,
         x: p.x,
         y: p.y,
+        aimDx: p.aimDx,
+        aimDy: p.aimDy,
         hp: p.hp,
         maxHp: p.maxHp,
         gold: p.gold,
@@ -875,7 +1019,10 @@ class GameCore {
         monstersKilled: p.monstersKilled,
         weaponType: p.weaponType,
         weaponLevel: p.weaponLevel,
-        hasChosenWeapon: p.hasChosenWeapon
+
+        // buffs
+        isEnraged: p.isEnraged,
+        enrageTimer: p.enrageTimer
       })),
       monsters: this.monsters.map(m => ({
         id: m.id,
@@ -904,6 +1051,11 @@ class GameCore {
         y: h.y,
         healAmount: h.healAmount
       })),
+      greenPotions: this.greenPotions.map(gp => ({
+        id: gp.id,
+        x: gp.x,
+        y: gp.y
+      })),
       spawnWarnings: this.spawnWarnings.map(w => ({
         id: w.id,
         side: w.side,
@@ -911,7 +1063,7 @@ class GameCore {
         x: w.x,
         y: w.y,
         timer: w.timer,
-        duration: w.duration
+        total: w.total
       }))
     };
   }
