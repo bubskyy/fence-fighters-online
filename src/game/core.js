@@ -37,7 +37,7 @@ const SPAWN_INTERVAL_DECAY = 0.045;
 
 const MAX_MONSTERS = 70;
 
-const MONSTER_BASE_HP = 30;
+const MONSTER_BASE_HP = 60;
 const MONSTER_HP_SCALE = 1.12;
 const MONSTER_BASE_SPEED = 90;
 const MONSTER_SPEED_SCALE = 1.06;
@@ -87,50 +87,50 @@ function isBossRound(round) {
 const HEAL_COST = 8;
 const HEAL_AMOUNT = 30;
 
-// weapon config
-// Balance goal: similar baseline DPS across weapons, with different "feel".
-// - Knife: fast throws, lower damage
-// - Axe: slower throws, higher damage + more cleave
-// - Spear: long-range feel via very high pierce
-// - Bow: projectile speed + slight spread
-//
-// Baseline DPS target ~30-33.
+// -----------------------------------------------------
+// Grenades (shop item)
+// -----------------------------------------------------
+// Bought in SHOP, deployed at the start of the next wave on the opponent side.
+// Each player can buy up to 2 grenades per shop.
+const GRENADE_COST = 25;
+const GRENADE_MAX_PER_ROUND = 2;
+const GRENADE_FUSE = 1.2;
+const GRENADE_RADIUS = 240;
+// Change this to tune grenade power.
+const GRENADE_DAMAGE = 100;
+
+// -----------------------------------------------------
+// Pickup collection radius
+// -----------------------------------------------------
+// Player-to-pickup distance (world pixels) to count as collected.
+// Increase this to make coins/hearts/potions easier to pick up.
+const PICKUP_RADIUS = 32;
+
+// weapon config – same idea as main.js
 const WEAPON_CONFIG = {
   knife: {
     damage: 10,
-    cooldown: 0.25,
-    bulletSpeed: 560,
+    cooldown: 0.35,
+    bulletSpeed: 520
   },
   axe: {
-    damage: 20,
-    cooldown: 0.62,
-    bulletSpeed: 500,
+    damage: 18,
+    cooldown: 0.65,
+    bulletSpeed: 460
   },
   spear: {
     damage: 14,
-    cooldown: 0.42,
-    bulletSpeed: 620,
+    cooldown: 0.45,
+    bulletSpeed: 580
   },
   bow: {
-    damage: 9,
-    cooldown: 0.30,
-    bulletSpeed: 820,
-  },
+    damage: 8,
+    cooldown: 0.55,
+    bulletSpeed: 780
+  }
 };
 
 const BULLET_LIFETIME = 1.7;
-
-// Pickups felt "too precise"; make pickup radius more forgiving.
-const PICKUP_RADIUS = 28;
-
-// Cleave / splash on hit (in addition to pierce).
-// Values are intentionally modest; axe gets the most.
-const CLEAVE = {
-  knife: { radius: 28, factor: 0.35 },
-  axe: { radius: 62, factor: 0.55 },
-  spear: { radius: 22, factor: 0.25 },
-  bow: { radius: 0, factor: 0.0 },
-};
 
 
 // Enemy projectiles (spitter)
@@ -152,6 +152,10 @@ function clamp(value, min, max) {
 
 function randomRange(a, b) {
   return a + Math.random() * (b - a);
+}
+
+function randRange(a, b) {
+  return randomRange(a, b);
 }
 
 function randomChoice(arr) {
@@ -186,6 +190,9 @@ class Player {
     // Temporary buffs
     this.enrageTimer = 0;
 
+    // Shop-limited items
+    this.grenadesBoughtThisRound = 0;
+
     // Default stats (will be overwritten on setWeapon).
     this.weaponDamage = 10;
     this.weaponCooldown = 0.35;
@@ -217,6 +224,9 @@ class Player {
     // Temporary buffs
     this.enrageTimer = 0;
 
+    // Shop-limited items
+    this.grenadesBoughtThisRound = 0;
+
     // Default stats (will be overwritten on setWeapon).
     this.weaponDamage = 10;
     this.weaponCooldown = 0.35;
@@ -247,16 +257,14 @@ class Player {
   upgradeWeapon() {
     this.weaponLevel = Math.min(this.weaponLevel + 1, 5);
     const cfg = WEAPON_CONFIG[this.weaponType];
-    // Upgrades were too strong; keep them meaningful but not game-breaking.
-    // Level 1 -> 5 ends up around ~1.8x DPS instead of ~3x.
-    const lvl = this.weaponLevel;
-    const dmgMult = 1 + 0.15 * (lvl - 1);           // 1.00 .. 1.60
-    const cdMult = Math.pow(0.97, lvl - 1);         // 1.00 .. ~0.885
-    const speedMult = 1 + 0.02 * (lvl - 1);         // 1.00 .. 1.08
-
-    this.weaponDamage = Math.round(cfg.damage * dmgMult);
-    this.weaponCooldown = Math.max(0.18, cfg.cooldown * cdMult);
-    this.bulletSpeed = cfg.bulletSpeed * speedMult;
+    this.weaponDamage = Math.floor(
+      cfg.damage * (1 + 0.4 * (this.weaponLevel - 1))
+    );
+    this.weaponCooldown = Math.max(
+      0.15,
+      cfg.cooldown * Math.pow(0.9, this.weaponLevel - 1)
+    );
+    this.bulletSpeed = cfg.bulletSpeed * (1 + 0.05 * (this.weaponLevel - 1));
   }
 
   takeDamage(amount) {
@@ -372,9 +380,7 @@ class Bullet {
     this.weaponType = weaponType;
     this.lifetime = BULLET_LIFETIME;
 
-    // Pierce is a simple way to express "cleave".
-    // Spear still has extreme pierce; axe gets modest pierce + splash (see CLEAVE).
-    const pierceMap = { knife: 0, axe: 1, spear: 999, bow: 1 };
+    const pierceMap = { knife: 0, axe: 2, spear: 999, bow: 1 };
     this.pierce = pierceMap[weaponType] ?? 0;
   }
 }
@@ -391,6 +397,18 @@ class EnemyBullet {
     this.damage = damage;
     this.lifetime = ENEMY_BULLET_LIFETIME;
     this.kind = "spitter";
+  }
+}
+
+class Grenade {
+  constructor(id, side, x, y) {
+    this.id = id;
+    this.side = side; // "left"/"right" half it belongs to
+    this.x = x;
+    this.y = y;
+    this.timer = GRENADE_FUSE;
+    this.radius = GRENADE_RADIUS;
+    this.damage = GRENADE_DAMAGE;
   }
 }
 
@@ -449,6 +467,7 @@ class GameCore {
     this.monsters = [];
     this.bullets = [];
     this.enemyBullets = [];
+    this.grenades = [];
     this.goldDrops = [];
     this.hearts = [];
     this.greenPotions = [];
@@ -457,6 +476,7 @@ class GameCore {
     this.nextMonsterId = 1;
     this.nextBulletId = 1;
     this.nextEnemyBulletId = 1;
+    this.nextGrenadeId = 1;
     this.nextGoldId = 1;
     this.nextHeartId = 1;
     this.nextGreenPotionId = 1;
@@ -469,6 +489,9 @@ class GameCore {
     this.shopLeft = SHOP_TIME;
 
     this.spawnInterval = 1.8;
+    // Normal (non-boss) wave target count scales up each round.
+    // Boss rounds should not overwrite this (otherwise the next wave becomes tiny).
+    this.normalTarget = BASE_TARGET;
     this.baseTarget = BASE_TARGET;
     this.baseSpawnedLeft = 0;
     this.baseSpawnedRight = 0;
@@ -486,6 +509,12 @@ class GameCore {
     // Bosses queued from the shop to be spawned next wave on a given side.
     // Each entry is a boss type string (e.g. "boss1", "boss2").
     this.pendingBosses = { left: [], right: [] };
+
+    // Grenades queued from the shop to be deployed next wave on a given side.
+    this.pendingGrenades = { left: 0, right: 0 };
+
+    // Grenades queued from the shop to be deployed next wave on a given side.
+    this.pendingGrenades = { left: 0, right: 0 };
 
     this.extraPlanLeft = [];
     this.extraPlanRight = [];
@@ -557,6 +586,15 @@ class GameCore {
       // "Latest" boss: based on current round tier.
       const bossType = bossTypeForRound(this.round);
       this.pendingBosses[opponentSide].push(bossType);
+    } else if (action === "send_grenade") {
+      // Limit grenades per player per shop.
+      if (p.grenadesBoughtThisRound >= GRENADE_MAX_PER_ROUND) return;
+      if (p.gold < GRENADE_COST) return;
+      p.gold -= GRENADE_COST;
+      p.grenadesBoughtThisRound += 1;
+
+      const opponentSide = isLeft ? "right" : "left";
+      this.pendingGrenades[opponentSide] = (this.pendingGrenades[opponentSide] || 0) + 1;
     } else if (action === "start_round") {
       if (p.side === "left") this.leftReady = true;
       else this.rightReady = true;
@@ -729,9 +767,28 @@ class GameCore {
     this.monsters = [];
     this.bullets = [];
     this.enemyBullets = [];
+    this.grenades = [];
     this.goldDrops = [];
     this.hearts = [];
     this.spawnWarnings = [];
+
+    // Deploy grenades purchased during the previous SHOP.
+    // Note: grenades belong to a side (half) and will only affect that half.
+    for (const side of ["left", "right"]) {
+      const count = this.pendingGrenades[side] || 0;
+      if (count > 0) {
+        for (let i = 0; i < count; i++) {
+          const xMin = side === "left" ? ARENA_PADDING : FENCE_X + ARENA_PADDING;
+          // Use the server's fixed simulation dimensions.
+          // (Older patches referenced WORLD_WIDTH/WORLD_HEIGHT which don't exist here.)
+          const xMax = side === "left" ? FENCE_X - ARENA_PADDING : SCREEN_WIDTH - ARENA_PADDING;
+          const x = randRange(xMin, xMax);
+          const y = randRange(ARENA_PADDING, SCREEN_HEIGHT - ARENA_PADDING);
+          this.grenades.push(new Grenade(this.nextGrenadeId++, side, x, y));
+        }
+      }
+      this.pendingGrenades[side] = 0;
+    }
 
     const bossRound = isBossRound(this.round);
 
@@ -765,8 +822,12 @@ class GameCore {
     this.extraSpawnCdRight = 0.35;
 
     // Boss rounds: spawn fewer but much tougher units.
-    // Normal rounds keep scaling up target count.
-    this.baseTarget = bossRound ? 1 : Math.round(this.baseTarget * TARGET_SCALE);
+    // IMPORTANT: don't let boss rounds overwrite the normal target scaling,
+    // otherwise the round after a boss becomes tiny ("only 1 monster" bug).
+    if (!bossRound) {
+      this.normalTarget = Math.round(this.normalTarget * TARGET_SCALE);
+    }
+    this.baseTarget = bossRound ? 1 : this.normalTarget;
     this.baseSpawnedLeft = 0;
     this.baseSpawnedRight = 0;
 
@@ -797,6 +858,11 @@ class GameCore {
         this.shopLeft = SHOP_TIME;
         this.leftReady = false;
         this.rightReady = false;
+
+        // Reset per-shop purchase limits
+        for (const pl of this.players) {
+          pl.grenadesBoughtThisRound = 0;
+        }
       }
     }
 
@@ -1027,11 +1093,52 @@ this.enemyBullets = this.enemyBullets.filter(
   eb =>
     !eb._dead &&
     eb.lifetime > 0 &&
+    // Do not allow spitter projectiles to visually cross the fence.
+    // They also won't damage the other player (collision checks), but this
+    // removes the confusing "shots flying to the other side" effect.
+    (eb.side === "left" ? eb.x <= FENCE_X - 6 : eb.x >= FENCE_X + 6) &&
     eb.x >= -50 &&
     eb.x <= SCREEN_WIDTH + 50 &&
     eb.y >= -50 &&
     eb.y <= SCREEN_HEIGHT + 50
 );
+
+    // -----------------------------------------------------
+    // Grenades (explode on the side they belong to only)
+    // -----------------------------------------------------
+    for (const g of this.grenades) {
+      g.timer -= dt;
+      if (g.timer <= 0 && !g._exploded) {
+        g._exploded = true;
+
+        // Damage players on the same side only
+        for (const p of this.players) {
+          if (!p.isAlive) continue;
+          if (p.side !== g.side) continue;
+          const d = Math.hypot(p.x - g.x, p.y - g.y);
+          if (d <= g.radius) {
+            // Linear falloff for nicer feel
+            const t = 1 - d / g.radius;
+            p.takeDamage(g.damage * (0.4 + 0.6 * t));
+          }
+        }
+
+        // Also damage monsters on the same side (helps as a "nuke")
+        for (const m of this.monsters) {
+          if (!m.isAlive) continue;
+          if (m.side !== g.side) continue;
+          const d = Math.hypot(m.x - g.x, m.y - g.y);
+          if (d <= g.radius) {
+            const t = 1 - d / g.radius;
+            m.hp -= g.damage * (0.6 + 0.6 * t);
+            if (m.hp <= 0) m.isAlive = false;
+          }
+        }
+      }
+    }
+
+    // Remove exploded grenades (keep a tiny linger for visuals if desired)
+    this.grenades = this.grenades.filter(g => !g._exploded);
 
     // update bullets
     for (const b of this.bullets) {
@@ -1058,24 +1165,7 @@ this.enemyBullets = this.enemyBullets.filter(
         if (m.side !== b.side) continue;
         const dist = Math.hypot(m.x - b.x, m.y - b.y);
         if (dist <= m.radius + 5) {
-          // Direct hit
           m.takeDamage(b.damage);
-
-          // "Cleave" (small AoE splash) to make impacts feel better.
-          const cleave = CLEAVE[b.weaponType] || { radius: 0, factor: 0 };
-          if (cleave.radius > 0 && cleave.factor > 0) {
-            const splashDmg = b.damage * cleave.factor;
-            for (const other of this.monsters) {
-              if (!other.isAlive) continue;
-              if (other === m) continue;
-              if (other.side !== b.side) continue;
-              const d2 = Math.hypot(other.x - m.x, other.y - m.y);
-              if (d2 <= cleave.radius) {
-                other.takeDamage(splashDmg);
-              }
-            }
-          }
-
           hits += 1;
           if (!m.isAlive) {
             const owner = this.getPlayer(b.ownerId);
@@ -1253,6 +1343,14 @@ this.enemyBullets = this.enemyBullets.filter(
         vx: eb.vx,
         vy: eb.vy,
         kind: eb.kind
+      })),
+      grenades: this.grenades.map(g => ({
+        id: g.id,
+        side: g.side,
+        x: g.x,
+        y: g.y,
+        timer: g.timer,
+        radius: g.radius
       })),
       bullets: this.bullets.map(b => ({
         id: b.id,

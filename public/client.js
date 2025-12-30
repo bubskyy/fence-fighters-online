@@ -33,13 +33,6 @@ const GREEN_POTION_SIZE = 50; // potion size in world pixels
 // -----------------------------------------------------
 // Sprite-sheet animation (client-side only)
 // -----------------------------------------------------
-//
-// To use a sprite sheet:
-// - Put the PNG in: public/assets/characters/baldricfrontwalksheet.png
-// - Ensure it is 6 columns x 4 rows (frame size 96x64 on a 576x256 sheet)
-//
-// This is a lightweight animator: it picks a row based on movement direction,
-// and advances frames only while the player is moving.
 
 const PLAYER_SHEETS = {
   p1: {
@@ -57,7 +50,6 @@ const PLAYER_SHEETS = {
     rowMap: { up: 0, left: 1, down: 2, right: 3 },
   },
 };
-
 
 // Stores per-player animation state keyed by player id
 const playerAnim = new Map(); // id -> { lastX, lastY, t, frame, dirRow }
@@ -120,10 +112,8 @@ const assetPaths = {
   fence: "assets/tiles/fence.png",
 
   player1: "assets/characters/player1.png",
-  // Walking sprite sheet for Player 1 (6 cols x 4 rows)
   player1_walk: "assets/characters/baldricfrontwalksheet.png",
   player2: "assets/characters/player2.png",
-  // Walking sprite sheet for Player 2 (6 cols x 4 rows)
   player2_walk: "assets/characters/mage_walking.png",
 
   slime: "assets/monsters/slime.png",
@@ -141,6 +131,7 @@ const assetPaths = {
   axe: "assets/weapons/axe.png",
   spear: "assets/weapons/spear.png",
   bow: "assets/weapons/bow.png",
+  grenade: "assets/weapons/grenade.png",
 
   // projectile sprite
   arrow: "assets/weapons/arrow.png",
@@ -238,6 +229,8 @@ const SHOP_ITEMS = [
   { id: "send:tank", label: "Send 2x Tanks", cost: 18, hint: "Soak damage" },
   { id: "send:spitter", label: "Send 2x Spitters", cost: 16, hint: "Ranged threat" },
   { id: "send_boss", label: "Send Boss", cost: 100, hint: "Big threat (latest tier)" },
+  // NEW: Grenade (2 max per shop, server enforces)
+  { id: "send_grenade", label: "Send Grenade", cost: 25, hint: "AoE explode (2 max/round)" },
 ];
 
 // WEAPON SELECT menu (per connected player)
@@ -255,8 +248,6 @@ let shopIndex = 0;
 let shopLastNavAt = 0;
 
 // Send inputs at a steady cadence while PLAYING.
-// This avoids "stuck" movement when the browser misses a keyup (tab switches, reloads, etc.)
-// and improves smoothness on higher server tick rates.
 let _lastSentKeys = "";
 setInterval(() => {
   if (currentGameState() !== "PLAYING") return;
@@ -312,7 +303,6 @@ socket.addEventListener("message", (event) => {
     lastState = msg.state;
 
     // If we leave PLAYING, force-clear movement keys so we never carry "stuck" keys
-    // into WEAPON_SELECT / SHOP / GAME_OVER.
     const nowState = lastState ? lastState.state : null;
     if (_lastServerGameState === "PLAYING" && nowState !== "PLAYING") {
       _lastSentKeys = "";
@@ -342,7 +332,7 @@ window.addEventListener("keydown", (e) => {
     sendInput();
   }
 
-  // Weapon selection keys
+  // Weapon selection
   if (st === "WEAPON_SELECT") {
     handleWeaponSelectKeydown(e);
   }
@@ -352,7 +342,7 @@ window.addEventListener("keydown", (e) => {
     handleShopKeydown(e);
   }
 
-  // Restart on GAME_OVER
+  // Restart
   if (st === "GAME_OVER") {
     if (e.key === "r" || e.key === "R" || e.key === "Enter") {
       send({ type: "restart" });
@@ -372,7 +362,7 @@ window.addEventListener("keyup", (e) => {
 });
 
 // -----------------------------------------------------
-// Shop UI helpers
+// Menu helpers
 // -----------------------------------------------------
 
 function clamp(n, lo, hi) {
@@ -380,10 +370,9 @@ function clamp(n, lo, hi) {
 }
 
 function handleWeaponSelectKeydown(e) {
-  // Weapon select: WASD navigate, Enter select.
-  // (Per-tab: each client controls its server-assigned player.)
+  // Weapon select: W/S navigate, Enter select.
   const now = performance.now();
-  const canNav = now - weaponLastNavAt > 80; // debounce
+  const canNav = now - weaponLastNavAt > 80;
 
   if ((e.key === "w" || e.key === "W") && canNav) {
     weaponIndex = clamp(weaponIndex - 1, 0, WEAPON_ITEMS.length - 1);
@@ -402,7 +391,7 @@ function handleWeaponSelectKeydown(e) {
     e.preventDefault();
   }
 
-  // (Optional) Legacy number shortcuts still work for now.
+  // Legacy number shortcuts
   const legacy = { "1": "knife", "2": "axe", "3": "spear", "4": "bow", "7": "knife", "8": "axe", "9": "spear", "0": "bow" };
   const weapon = legacy[e.key];
   if (weapon) {
@@ -412,9 +401,9 @@ function handleWeaponSelectKeydown(e) {
 }
 
 function handleShopKeydown(e) {
-  // WASD navigate, Enter buy, Space ready.
+  // W/S navigate, Enter buy, Space ready.
   const now = performance.now();
-  const canNav = now - shopLastNavAt > 80; // debounce
+  const canNav = now - shopLastNavAt > 80;
 
   if ((e.key === "w" || e.key === "W") && canNav) {
     shopIndex = clamp(shopIndex - 1, 0, SHOP_ITEMS.length - 1);
@@ -440,7 +429,7 @@ function handleShopKeydown(e) {
     e.preventDefault();
   }
 
-  // Legacy shortcuts (keep them for muscle memory)
+  // Legacy shortcuts
   if (e.key === "q" || e.key === "Q") send({ type: "shop_action", action: "upgrade_weapon" });
   if (e.key === "e" || e.key === "E") send({ type: "shop_action", action: "heal" });
 }
@@ -450,10 +439,7 @@ function handleShopKeydown(e) {
 // -----------------------------------------------------
 
 function beginWorld() {
-  // Clear in CSS pixels
   ctx.clearRect(0, 0, cssWidth, cssHeight);
-
-  // World transform: world coords -> canvas CSS px
   ctx.save();
   ctx.scale(renderScale, renderScale);
 }
@@ -492,8 +478,6 @@ function drawWeaponOnPlayer(p) {
   const weaponKey = p.weaponType;
   const img = assets[weaponKey];
 
-  // Offset weapon to "front" of the player.
-  // We rotate it if the server provides aimDx/aimDy.
   const offsetX = (p.side === "left" ? 18 : -18) * PLAYER_SCALE;
   const offsetY = 8 * PLAYER_SCALE;
   const aimDx = typeof p.aimDx === "number" ? p.aimDx : (p.side === "left" ? 1 : -1);
@@ -524,21 +508,18 @@ function drawPlayers(players) {
     const img = p.side === "left" ? assets.player1 : assets.player2;
     const size = 40 * PLAYER_SCALE;
 
-    // --- Player sprite rendering ---
-    // Player 1 can use a walking sprite sheet (animated) if present.
     const sheetImg = p.side === "left" ? assets.player1_walk : assets.player2_walk;
     const sheetDef = p.side === "left" ? PLAYER_SHEETS.p1 : PLAYER_SHEETS.p2;
 
     if (sheetImg && sheetImg.complete && sheetImg.naturalWidth) {
       const a = getAnimState(p.id);
 
-      // Movement delta since last render (client-side), used to decide "walking"
       const dx = a.lastX == null ? 0 : (p.x - a.lastX);
       const dy = a.lastY == null ? 0 : (p.y - a.lastY);
       a.lastX = p.x;
       a.lastY = p.y;
 
-      const moving = Math.hypot(dx, dy) > 0.2; // pixels per frame threshold
+      const moving = Math.hypot(dx, dy) > 0.2;
       if (moving) {
         a.dirRow = directionToRow(dx, dy, sheetDef.rowMap);
         a.t += _renderDt;
@@ -548,19 +529,15 @@ function drawPlayers(players) {
           a.t = a.t % (1 / sheetDef.fps);
         }
       } else {
-        // idle: freeze on first frame of the current direction
         a.frame = 0;
         a.t = 0;
       }
 
-      // If your sheet has "right" row but you want to save rows, you can flip left instead.
-      const flipX = false; // set true if you only have a left-walk row and want to mirror for right
+      const flipX = false;
       drawSpriteFrame(sheetImg, sheetDef, a.frame, a.dirRow, p.x, p.y, size, flipX);
     } else if (img && img.complete && img.naturalWidth) {
-      // Fallback to static sprites
       ctx.drawImage(img, p.x - size / 2, p.y - size / 2, size, size);
     } else {
-      // Debug fallback (no images loaded)
       ctx.fillStyle = p.side === "left" ? "#4ab1ff" : "#ff5b5b";
       ctx.beginPath();
       ctx.arc(p.x, p.y, 18 * PLAYER_SCALE, 0, Math.PI * 2);
@@ -635,12 +612,10 @@ function drawSpawnWarnings(warnings) {
 
 function projectileImageForWeapon(weaponType) {
   if (weaponType === "bow") return assets.arrow;
-  return assets[weaponType]; // knife/axe/spear
+  return assets[weaponType];
 }
 
 function projectileDrawSizeForWeapon(weaponType) {
-  // Requirement: projectiles should be the same size as the weapon the player is holding.
-  // Our on-player weapon draw size is ~28 * WEAPON_SCALE.
   return 28 * WEAPON_SCALE;
 }
 
@@ -650,7 +625,7 @@ function drawBullets(bullets) {
 
     // Make thrown weapons spin (client-side visual only)
     const baseAngle = Math.atan2(b.vy || 0, b.vx || 1);
-    const spin = (performance.now() / 1000) * 14.0; // rad/s
+    const spin = (performance.now() / 1000) * 14.0;
     const angle = baseAngle + spin;
 
     if (img && img.complete && img.naturalWidth) {
@@ -675,10 +650,8 @@ function drawBullets(bullets) {
   }
 }
 
-
 function drawEnemyBullets(enemyBullets) {
   for (const b of enemyBullets || []) {
-    // Only spitter blobs for now
     const img = assets.spitter_projectile;
 
     if (img && img.complete && img.naturalWidth) {
@@ -701,6 +674,41 @@ function drawEnemyBullets(enemyBullets) {
   }
 }
 
+function drawGrenades(grenades) {
+  for (const g of grenades || []) {
+    const img = assets.grenade;
+    const size = 28 * WEAPON_SCALE;
+
+    if (img && img.complete && img.naturalWidth) {
+      ctx.drawImage(
+        img,
+        g.x - size / 2,
+        g.y - size / 2,
+        size,
+        size
+      );
+    } else {
+      // fallback
+      ctx.save();
+      ctx.fillStyle = "#3aff5a";
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, 10 * WEAPON_SCALE, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Optional: explosion warning ring
+    if (g.timer < 0.6) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,80,0,0.8)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, 40, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
 
 
 function drawPickups(golds, hearts, greenPotions) {
@@ -712,15 +720,8 @@ function drawPickups(golds, hearts, greenPotions) {
     const size = GOLD_SIZE;
 
     if (img) {
-      ctx.drawImage(
-        img,
-        g.x - size / 2,
-        g.y - size / 2,
-        size,
-        size
-      );
+      ctx.drawImage(img, g.x - size / 2, g.y - size / 2, size, size);
     } else {
-      // fallback circle
       ctx.fillStyle = "#ffd700";
       ctx.beginPath();
       ctx.arc(g.x, g.y, size * 0.35, 0, Math.PI * 2);
@@ -736,15 +737,8 @@ function drawPickups(golds, hearts, greenPotions) {
     const size = HEART_SIZE;
 
     if (img) {
-      ctx.drawImage(
-        img,
-        h.x - size / 2,
-        h.y - size / 2,
-        size,
-        size
-      );
+      ctx.drawImage(img, h.x - size / 2, h.y - size / 2, size, size);
     } else {
-      // fallback circle
       ctx.fillStyle = "#ff4d6d";
       ctx.beginPath();
       ctx.arc(h.x, h.y, size * 0.35, 0, Math.PI * 2);
@@ -760,29 +754,20 @@ function drawPickups(golds, hearts, greenPotions) {
     const size = GREEN_POTION_SIZE;
 
     if (img) {
-      ctx.drawImage(
-        img,
-        gp.x - size / 2,
-        gp.y - size / 2,
-        size,
-        size
-      );
+      ctx.drawImage(img, gp.x - size / 2, gp.y - size / 2, size, size);
     } else {
-      // fallback circle
       ctx.fillStyle = "#32cd32";
       ctx.beginPath();
-      ctx.arc(gp.x, gp.y, size * 0.35, 0, Math.PI * 2);
+      ctx.arc(gp.x, g.y, size * 0.35, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 }
 
-
 function drawHud(state) {
   const p1 = state.players.find((p) => p.side === "left");
   const p2 = state.players.find((p) => p.side === "right");
 
-  // Make HUD more readable (especially P2 gold) by drawing small panels + outlined text.
   function textOutlined(t, x, y, align = "left", size = 16) {
     ctx.font = `${size}px Arial`;
     ctx.textAlign = align;
@@ -795,11 +780,9 @@ function drawHud(state) {
 
   ctx.save();
 
-  // Left panel (P1)
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.fillRect(8, 8, 360, 48);
 
-  // Right panel (P2)
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.fillRect(WORLD_WIDTH - 368, 8, 360, 48);
 
@@ -810,7 +793,6 @@ function drawHud(state) {
   }
 
   if (p2) {
-    // Keep it left-aligned inside the right panel so it doesn't hug the edge.
     const baseX = WORLD_WIDTH - 358;
     textOutlined(`P2 HP: ${Math.max(0, Math.floor(p2.hp))}`, baseX, 28, "left", 16);
     const w2 = p2.weaponType ? p2.weaponType.toUpperCase() : "...";
@@ -825,8 +807,9 @@ function drawHud(state) {
       ? `Shop: ${Math.ceil(state.shopLeft)}s`
       : "";
 
+  ctx.fillStyle = "#fff";
+  ctx.font = "16px Arial";
   ctx.fillText(`Round ${state.round} ${timerText ? "— " + timerText : ""}`, WORLD_WIDTH / 2, 22);
-
   if (timerText) ctx.fillText(timerText, WORLD_WIDTH / 2, 44);
 
   ctx.restore();
@@ -870,7 +853,6 @@ function drawShopUI(state) {
     66
   );
 
-  // Items
   const startY = 110;
   const rowH = 36;
   ctx.textAlign = "left";
@@ -899,7 +881,6 @@ function drawShopUI(state) {
     ctx.textAlign = "left";
   }
 
-  // Controls
   ctx.fillStyle = "rgba(255,255,255,0.85)";
   ctx.font = "14px Arial";
   ctx.textAlign = "center";
@@ -924,7 +905,6 @@ function drawWeaponSelectUI(state) {
   ctx.textAlign = "center";
   ctx.fillText("CHOOSE WEAPON", panelX + panelW / 2, 42);
 
-  // Show whether the other player has chosen yet (info only)
   const p1 = state.players.find((p) => p.side === "left");
   const p2 = state.players.find((p) => p.side === "right");
   const chosenL = p1 && p1.weaponType ? p1.weaponType.toUpperCase() : "...";
@@ -933,7 +913,6 @@ function drawWeaponSelectUI(state) {
   ctx.font = "14px Arial";
   ctx.fillText(`P1: ${chosenL}   |   P2: ${chosenR}`, panelX + panelW / 2, 66);
 
-  // Items list
   const startY = 130;
   const rowH = 44;
   ctx.textAlign = "left";
@@ -973,6 +952,7 @@ function render() {
   const now = performance.now();
   _renderDt = Math.min(0.05, Math.max(0.0, (now - _lastRenderAt) / 1000));
   _lastRenderAt = now;
+
   beginWorld();
   drawBackground();
 
@@ -983,7 +963,6 @@ function render() {
     return;
   }
 
-  // Status line
   statusEl.textContent =
     (playerId === 1 ? "P1 (Left)" : playerId === 2 ? "P2 (Right)" : "Spectator") +
     ` — State: ${lastState.state} — Round: ${lastState.round}`;
@@ -992,15 +971,14 @@ function render() {
   drawMonsters(lastState.monsters || []);
   drawBullets(lastState.bullets || []);
   drawEnemyBullets(lastState.enemyBullets || []);
+  drawGrenades(lastState.grenades || []);
   drawPickups(lastState.goldDrops || [], lastState.hearts || [], lastState.greenPotions || []);
   drawPlayers(lastState.players || []);
   drawHud(lastState);
 
-  // State overlays
   if (lastState.state === "WEAPON_SELECT") {
     drawWeaponSelectUI(lastState);
   } else if (lastState.state === "SHOP") {
-    // Custom UI (navigation with WASD + Enter)
     drawShopUI(lastState);
   } else if (lastState.state === "GAME_OVER") {
     const winner =
