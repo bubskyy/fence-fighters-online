@@ -681,7 +681,9 @@ function drawGrenades(grenades) {
     //  - Draw a faint radius ring (blast preview)
     //  - Draw a fuse timer text above it
     const img = assets.grenade;
-    const size = 34 * WEAPON_SCALE;
+    // Make the grenade body very obvious (users reported they only see the radius ring).
+    // Bigger + a dark shadow disc under it + pixel-art friendly rendering.
+    const size = 64 * WEAPON_SCALE;
 
     ctx.save();
 
@@ -693,18 +695,35 @@ function drawGrenades(grenades) {
     ctx.arc(g.x, g.y, g.radius || 120, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Grenade body sprite (or fallback circle)
+    // Grenade body (sprite or clear fallback)
     ctx.globalAlpha = 1.0;
+
+    // Shadow disc under the sprite so it never "disappears" on dark ground.
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath();
+    ctx.arc(g.x, g.y + size * 0.08, size * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pixel art: turn smoothing off just for this draw.
+    const prevSmoothing = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+
     if (img && img.complete && img.naturalWidth) {
       ctx.drawImage(img, g.x - size / 2, g.y - size / 2, size, size);
     } else {
-      // fallback body
-      const pulse = 0.55 + 0.45 * Math.sin((performance.now() / 1000) * 10);
+      // fallback body: bright, outlined, and pulsing
+      const pulse = 0.65 + 0.35 * Math.sin((performance.now() / 1000) * 10);
+      const r = size * 0.16 * pulse;
       ctx.fillStyle = "#ff7b2e";
       ctx.beginPath();
-      ctx.arc(g.x, g.y, 10 * WEAPON_SCALE * pulse, 0, Math.PI * 2);
+      ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
     }
+
+    ctx.imageSmoothingEnabled = prevSmoothing;
 
     // Fuse timer text
     ctx.globalAlpha = 0.9;
