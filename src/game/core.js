@@ -15,6 +15,8 @@ const PLAYER_SPEED = 300;           // bumped a bit for snappier feel
 const PLAYER_MAX_HP = 100;
 const HEART_HEAL = 25;
 const GOLD_PER_PICKUP = 3;
+// Pickup collision radius (makes coins/potions less "pixel perfect")
+const PICKUP_RADIUS = 28;
 
 // Green potion (enrage) pickup
 // When collected: +15% damage, +75% attack speed for a short duration.
@@ -37,7 +39,7 @@ const SPAWN_INTERVAL_DECAY = 0.045;
 
 const MAX_MONSTERS = 70;
 
-const MONSTER_BASE_HP = 40;
+const MONSTER_BASE_HP = 50;
 const MONSTER_HP_SCALE = 1.12;
 const MONSTER_BASE_SPEED = 90;
 const MONSTER_SPEED_SCALE = 1.06;
@@ -94,40 +96,32 @@ const HEAL_AMOUNT = 30;
 // Each player can buy up to 2 grenades per shop.
 const GRENADE_COST = 25;
 const GRENADE_MAX_PER_ROUND = 2;
-const GRENADE_FUSE = 1.2;
+const GRENADE_FUSE = 1.45;
 const GRENADE_RADIUS = 240;
-// Change this to tune grenade power.
-const GRENADE_DAMAGE = 100;
-
-// -----------------------------------------------------
-// Pickup collection radius
-// -----------------------------------------------------
-// Player-to-pickup distance (world pixels) to count as collected.
-// Increase this to make coins/hearts/potions easier to pick up.
-const PICKUP_RADIUS = 32;
+const GRENADE_DAMAGE = 70;
 
 // weapon config – same idea as main.js
 const WEAPON_CONFIG = {
   knife: {
-    damage: 10,
-    cooldown: 0.35,
-    bulletSpeed: 520
+    damage: 6,          // 8 * 0.75
+    cooldown: 0.19,     // 0.25 * 0.75
+    bulletSpeed: 420,   // 560 * 0.75
   },
   axe: {
-    damage: 18,
-    cooldown: 0.65,
-    bulletSpeed: 460
+    damage: 15,         // 20 * 0.75
+    cooldown: 0.47,     // 0.62 * 0.75
+    bulletSpeed: 375,   // 500 * 0.75
   },
   spear: {
-    damage: 14,
-    cooldown: 0.45,
-    bulletSpeed: 580
+    damage: 10.5,       // 14 * 0.75
+    cooldown: 0.32,     // 0.42 * 0.75
+    bulletSpeed: 465,   // 620 * 0.75
   },
   bow: {
-    damage: 8,
-    cooldown: 0.55,
-    bulletSpeed: 780
-  }
+    damage: 6.75,       // 9 * 0.75
+    cooldown: 0.23,     // 0.30 * 0.75
+    bulletSpeed: 615,   // 820 * 0.75
+  },
 };
 
 const BULLET_LIFETIME = 1.7;
@@ -1150,6 +1144,10 @@ this.enemyBullets = this.enemyBullets.filter(
     this.bullets = this.bullets.filter(
       b =>
         b.lifetime > 0 &&
+        // Do not allow player projectiles to visually cross the fence.
+        // They also won't damage the other side (collision checks), but this removes
+        // the confusing "weapons flying into the other player's half" effect.
+        (b.side === "left" ? b.x <= FENCE_X - 6 : b.x >= FENCE_X + 6) &&
         b.x >= -50 &&
         b.x <= SCREEN_WIDTH + 50 &&
         b.y >= -50 &&
@@ -1297,6 +1295,7 @@ this.enemyBullets = this.enemyBullets.filter(
   exportState() {
     return {
       state: this.state,
+      grenades: this.grenades,
       winner: this.winner,
       round: this.round,
       waveLeft: this.waveLeft,

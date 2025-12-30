@@ -131,7 +131,6 @@ const assetPaths = {
   axe: "assets/weapons/axe.png",
   spear: "assets/weapons/spear.png",
   bow: "assets/weapons/bow.png",
-  grenade: "assets/weapons/grenade.png",
 
   // projectile sprite
   arrow: "assets/weapons/arrow.png",
@@ -139,6 +138,7 @@ const assetPaths = {
   gold: "assets/pickups/gold.png",
   heart: "assets/pickups/heart.png",
   green_potion: "assets/pickups/green_potion.png",
+  grenade: "assets/pickups/grenade.png",
 };
 
 const assets = {};
@@ -676,40 +676,46 @@ function drawEnemyBullets(enemyBullets) {
 
 function drawGrenades(grenades) {
   for (const g of grenades || []) {
+    // Grenade visuals:
+    //  - Draw the grenade sprite (assets.grenade) as the "body"
+    //  - Draw a faint radius ring (blast preview)
+    //  - Draw a fuse timer text above it
     const img = assets.grenade;
-    const size = 28 * WEAPON_SCALE;
+    const size = 34 * WEAPON_SCALE;
 
+    ctx.save();
+
+    // Blast radius preview (separate from the sprite)
+    ctx.globalAlpha = 0.18;
+    ctx.strokeStyle = "#ffb14a";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(g.x, g.y, g.radius || 120, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Grenade body sprite (or fallback circle)
+    ctx.globalAlpha = 1.0;
     if (img && img.complete && img.naturalWidth) {
-      ctx.drawImage(
-        img,
-        g.x - size / 2,
-        g.y - size / 2,
-        size,
-        size
-      );
+      ctx.drawImage(img, g.x - size / 2, g.y - size / 2, size, size);
     } else {
-      // fallback
-      ctx.save();
-      ctx.fillStyle = "#3aff5a";
+      // fallback body
+      const pulse = 0.55 + 0.45 * Math.sin((performance.now() / 1000) * 10);
+      ctx.fillStyle = "#ff7b2e";
       ctx.beginPath();
-      ctx.arc(g.x, g.y, 10 * WEAPON_SCALE, 0, Math.PI * 2);
+      ctx.arc(g.x, g.y, 10 * WEAPON_SCALE * pulse, 0, Math.PI * 2);
       ctx.fill();
-      ctx.restore();
     }
 
-    // Optional: explosion warning ring
-    if (g.timer < 0.6) {
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,80,0,0.8)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(g.x, g.y, 40, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    }
+    // Fuse timer text
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "#fff";
+    ctx.font = "12px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(`${Math.max(0, (g.timer || 0)).toFixed(1)}s`, g.x, g.y - size * 0.7);
+
+    ctx.restore();
   }
 }
-
 
 function drawPickups(golds, hearts, greenPotions) {
   // ----------------
